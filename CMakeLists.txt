@@ -1,6 +1,6 @@
 set(SELF TypeDeductionAnalysis)
 
-add_llvm_library(${SELF} MODULE
+add_library(${SELF} STATIC
   Containers/InsertionOrderedMap.hpp
   Debug/Logger.hpp
   Debug/Logger.cpp
