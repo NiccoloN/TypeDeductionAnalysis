@@ -143,7 +143,9 @@ TypeDeductionAnalysis::CandidateSet TypeDeductionAnalysis::deduceValuePointerTyp
           break;
         }
         first = false;
-        type->incrementIndirections(-1);
+        if (type->getIndirections() > 0) {
+          type->incrementIndirections(-1);
+        }
         continue;
       }
       if (auto structType = std::dynamic_ptr_cast<TransparentStructType>(type)) {
@@ -167,7 +169,9 @@ TypeDeductionAnalysis::CandidateSet TypeDeductionAnalysis::deduceValuePointerTyp
     }
   }
   else if (auto* callInst = dyn_cast<CallBase>(value)) {
-    candidateTypes.insert(getDeducedType(callInst->getCalledFunction()));
+    if(callInst->getCalledFunction() != nullptr) {
+      candidateTypes.insert(getDeducedType(callInst->getCalledFunction()));
+    }
   }
 
   // Deduce from users
@@ -252,11 +256,13 @@ TypeDeductionAnalysis::CandidateSet TypeDeductionAnalysis::deduceValuePointerTyp
       }
     }
     else if (auto* callInst = dyn_cast<CallBase>(user)) {
-      for (unsigned i = 0; i < callInst->getCalledFunction()->arg_size(); i++) {
-        Value* arg = callInst->getArgOperand(i);
-        if (arg == value) {
-          candidateTypes.insert(getDeducedType(callInst->getCalledFunction()->getArg(i)));
-          break;
+      if(callInst->getCalledFunction() != nullptr && callInst->getCalledFunction()->getNumOperands() > 0 && callInst->getCalledFunction()->arg_size() > 0) {
+        for (unsigned i = 0; i < callInst->getCalledFunction()->arg_size(); i++) {
+          Value* arg = callInst->getCalledFunction()->getOperand(i);
+          if (arg == value) {
+            candidateTypes.insert(getDeducedType(callInst->getCalledFunction()->getArg(i)));
+            break;
+          }
         }
       }
     }
@@ -286,8 +292,10 @@ TypeDeductionAnalysis::CandidateSet TypeDeductionAnalysis::deduceArgumentPointer
   Function* parentF = argument->getParent();
   for (User* functionUser : parentF->users())
     if (auto* callBase = dyn_cast<CallBase>(functionUser)) {
-      Value* value = callBase->getArgOperand(argIndex);
-      candidateTypes.insert(getDeducedType(value));
+      if(argIndex < callBase->arg_size()) {
+        Value* value = callBase->getArgOperand(argIndex);
+        candidateTypes.insert(getDeducedType(value));
+      }
     }
   candidateTypes.merge(deduceValuePointerType(argument));
   return candidateTypes;
@@ -313,7 +321,15 @@ std::shared_ptr<TransparentType> TypeDeductionAnalysis::getBestCandidateType(con
       continue;
     if (!bestCandidate)
       bestCandidate = candidate;
-    else if (candidate->compareTransparency(*bestCandidate) == 1) {
+    else if (isa<TransparentStructType>(candidate.get()) && isa<TransparentStructType>(bestCandidate.get())) {
+      const auto& candidateStruct = cast<TransparentStructType>(*candidate.get());
+      const auto& bestCandidateStruct = cast<TransparentStructType>(*bestCandidate.get());
+      if(candidateStruct.getNumFieldTypes() == bestCandidateStruct.getNumFieldTypes()) {
+        if(candidate->compareTransparency(*bestCandidate) == 1) {
+          bestCandidate = candidate;
+        }
+      }
+    } else if (candidate->compareTransparency(*bestCandidate) == 1) {
       // TODO implement strict aliasing rule and most information detain
       bestCandidate = candidate;
     }
