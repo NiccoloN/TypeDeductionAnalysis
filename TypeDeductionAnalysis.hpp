@@ -16,25 +16,25 @@ class TypeDeductionAnalysis : public llvm::AnalysisInfoMixin<TypeDeductionAnalys
 
 public:
   struct Result {
-    llvm::DenseMap<llvm::Value*, std::shared_ptr<TransparentType>> transparentTypes;
+    llvm::DenseMap<llvm::Value*, std::unique_ptr<TransparentType>> transparentTypes;
   };
 
   Result run(llvm::Module& m, llvm::ModuleAnalysisManager&);
 
 private:
-  using CandidateSet = std::unordered_set<std::shared_ptr<TransparentType>>;
-  
-  InsertionOrderedMap<llvm::Value*, std::shared_ptr<TransparentType>> deducedTypes;
+  using CandidateSet = std::unordered_set<std::unique_ptr<TransparentType>>;
+
+  InsertionOrderedMap<llvm::Value*, std::unique_ptr<TransparentType>> deducedTypes;
   llvm::DenseMap<llvm::Value*, CandidateSet> candidateTypes;
 
-  bool deducePointerType(llvm::Value* value, std::shared_ptr<TransparentType> currentDeducedType = nullptr);
-  CandidateSet deduceValuePointerType(llvm::Value* value);
-  CandidateSet deduceFunctionPointerType(llvm::Function* function);
-  CandidateSet deduceArgumentPointerType(llvm::Argument* argument);
-  std::shared_ptr<TransparentType> getDeducedType(llvm::Value* value) const;
-  std::shared_ptr<TransparentType> getBestCandidateType(const CandidateSet& candidates) const;
+  bool deducePointerType(llvm::Value* value, TransparentType* currentDeducedType = nullptr);
+  CandidateSet& deduceValuePointerType(llvm::Value* value);
+  CandidateSet& deduceFunctionPointerType(llvm::Function* function);
+  CandidateSet& deduceArgumentPointerType(llvm::Argument* argument);
+  const TransparentType* getOrCreateDeducedType(llvm::Value* value);
+  std::unique_ptr<TransparentType> getBestCandidateType(const CandidateSet& candidates) const;
 
-  void logDeduction(const std::shared_ptr<TransparentType>& bestCandidate, const CandidateSet& candidates);
+  void logDeduction(const TransparentType* bestCandidate, const CandidateSet& candidates);
   void logDeducedTypes();
 };
 

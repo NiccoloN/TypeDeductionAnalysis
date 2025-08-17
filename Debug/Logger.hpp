@@ -25,6 +25,20 @@ constexpr bool is_iterable_v = is_iterable<T>::value;
 template <typename T>
 concept PrintableConcept = is_printable<T>::value;
 
+// Concept for smart pointer
+template <typename P>
+concept SmartPtrLike = requires(const P& p) {
+  { p.get() };                                   // has .get()
+  requires std::is_pointer_v<decltype(p.get())>; // and .get() returns an actual pointer type
+};
+
+template <typename P>
+using smart_pointee_t = std::remove_pointer_t<decltype(std::declval<const P&>().get())>;
+
+// Concept for smart pointer to Printable objects
+template <typename P>
+concept SmartPtrToPrintable = SmartPtrLike<P> && PrintableConcept<smart_pointee_t<P>>;
+
 // Concept for LLVMPrintable objects
 template <typename T>
 concept LLVMPrintableConcept = has_llvm_print_v<T> && !PrintableConcept<T>;
@@ -98,35 +112,33 @@ public:
 
   // Log for Printable objects
   template <PrintableConcept T>
-  Logger& log(const T& value, Color color = Current) {
-    log(value.toString(), color);
+  Logger& log(const T& printable, Color color = Current) {
+    log(printable.toString(), color);
     return *this;
   }
 
-  // Log for shared_ptr to Printable objects.
-  template <PrintableConcept T>
-  Logger& log(const std::shared_ptr<T>& value, Color color = Current) {
-    if (value)
-      log(value->toString(), color);
-    else
-      log("null", color);
-    return *this;
+  // Log for smart ptr to Printable objects
+  template <SmartPtrToPrintable T>
+  Logger& log(const T& ptr, Color color = Current) {
+    if (auto* rawPtr = ptr.get())
+      return log(*rawPtr, color);
+    return log("null", color);
   }
 
   // Log for LLVM-printable objects
   template <LLVMPrintableConcept T>
-  Logger& log(const T& value, Color color = Current) {
-    log(toString(value), color);
+  Logger& log(const T& printableLLVM, Color color = Current) {
+    log(toString(printableLLVM), color);
     return *this;
   }
 
   // Log for iterable objects
   template <IterableConcept T>
     requires(!PrintableConcept<T> && !LLVMPrintableConcept<T>)
-  Logger& log(const T& container, Color color = Current) {
+  Logger& log(const T& iterable, Color color = Current) {
     log("[", Bold);
     bool first = true;
-    for (const auto& el : container) {
+    for (const auto& el : iterable) {
       if (!first)
         log(", ", Bold);
       else
@@ -139,9 +151,9 @@ public:
 
   // Generic fallback log (for types that are not printable in any special way)
   template <typename T>
-    requires(!PrintableConcept<T> && !LLVMPrintableConcept<T> && !IterableConcept<T>)
+    requires(!PrintableConcept<T> && !SmartPtrToPrintable<T> && !LLVMPrintableConcept<T> && !IterableConcept<T>)
   Logger& log(const T& message, Color color = Current) {
-    // Convert message to string.
+    // Convert message to string
     std::string s;
     llvm::raw_string_ostream oss(s);
     oss << message;
@@ -199,8 +211,8 @@ public:
     return *this;
   }
 
-  Logger& log(const bool value, Color color = Current) {
-    log(value ? "true" : "false", color);
+  Logger& log(const bool boolean, Color color = Current) {
+    log(boolean ? "true" : "false", color);
     return *this;
   }
 
@@ -214,8 +226,8 @@ public:
   }
 
   template <typename T>
-  Logger& operator<<(const T& val) {
-    log(val);
+  Logger& operator<<(const T& value) {
+    log(value);
     return *this;
   }
 

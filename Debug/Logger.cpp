@@ -11,8 +11,17 @@ Logger& Logger::getInstance() {
 }
 
 Logger& Logger::logValue(const Value* value, bool logParent) {
-  if (auto* f = dyn_cast<Function>(value))
-    log(f->getName());
+  if (auto* f = dyn_cast<Function>(value)) {
+    log(f->getReturnType()).log(" ");
+    log(f->getName()).log("(");
+    unsigned numArgs = f->arg_size();
+    for (const Argument& arg : f->args()) {
+      log(arg.getType());
+      if (arg.getArgNo() < numArgs - 1)
+        log(", ");
+    }
+    log(")");
+  }
   else {
     log(value);
     if (logParent) {

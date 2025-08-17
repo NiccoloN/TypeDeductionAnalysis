@@ -1,14 +1,14 @@
 #pragma once
 
-#include "Utils/PtrCasts.hpp"
 #include "Utils/PrintUtils.hpp"
+#include "Utils/PtrCasts.hpp"
 
 #include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Type.h>
 
 #include <memory>
-#include <utility>
+#include <ranges>
 
 namespace tda {
 
@@ -16,12 +16,14 @@ class TransparentType;
 
 class TransparentTypeFactory {
 public:
-  static std::shared_ptr<TransparentType> create(llvm::Type* type);
-  static std::shared_ptr<TransparentType> create(const llvm::Value* value);
-  static std::shared_ptr<TransparentType> create(llvm::Type* unwrappedType, unsigned indirections);
+  static std::unique_ptr<TransparentType> create(llvm::Type* type);
+  static std::unique_ptr<TransparentType> create(const llvm::Value* value);
+  static std::unique_ptr<TransparentType> create(llvm::Type* unwrappedType, unsigned indirections);
 };
 
 class TransparentType : public Printable {
+  friend TransparentTypeFactory;
+
 public:
   enum TransparentTypeKind {
     K_Scalar,
@@ -31,67 +33,88 @@ public:
 
   static bool classof(const TransparentType* type) { return type->getKind() == K_Scalar; }
 
-  bool isValid() const { return unwrappedType; }
-  llvm::Type* getUnwrappedType() const { return unwrappedType; }
-  virtual llvm::Type* getFullyUnwrappedType() const { return unwrappedType; }
+  virtual TransparentTypeKind getKind() const { return K_Scalar; }
+  virtual bool isCompatibleLLVMType(llvm::Type* type) const { return type->getNumContainedTypes() == 0; }
+
+  TransparentType() = default;
+
+  llvm::Type* getUnwrappedLLVMType() const { return unwrappedType; }
+  void setUnwrappedLLVMType(llvm::Type* unwrappedType) {
+    assert(isCompatibleLLVMType(unwrappedType));
+    this->unwrappedType = unwrappedType;
+  }
+
+  virtual llvm::Type* getFullyUnwrappedLLVMType() const { return unwrappedType; }
+
   unsigned getIndirections() const { return indirections; }
-  std::shared_ptr<TransparentType> getPointedType() const;
-  virtual llvm::SmallPtrSet<llvm::Type*, 4> getContainedTypes() const { return {unwrappedType}; }
-  bool isArrayType() const { return unwrappedType->isArrayTy() || unwrappedType->isVectorTy(); }
-  bool isStructType() const { return unwrappedType->isStructTy(); }
-  bool isFloatingPointType() const { return unwrappedType->isFloatingPointTy(); }
-  bool isIntegerType() const { return unwrappedType->isIntegerTy(); }
-  virtual bool containsFloatingPointType() const { return unwrappedType->isFloatingPointTy(); }
-  bool isPointerType() const { return indirections > 0 || isOpaquePointer(); }
-  bool isBytePointer() const { return unwrappedType == llvm::Type::getInt8Ty(unwrappedType->getContext()); }
+  void setIndirections(unsigned indirections) { this->indirections = indirections; }
+  void incrementIndirections(int increment);
+
+  std::unique_ptr<TransparentType> getPointedType() const;
+  std::unique_ptr<TransparentType> getPointerToType() const;
+
+  bool isValid() const { return unwrappedType; }
   virtual bool isOpaquePointer() const { return unwrappedType->isPointerTy(); }
+  bool isPointerTy() const { return indirections > 0 || isOpaquePointer(); }
+
+  bool isScalarTT() const { return getKind() == K_Scalar; }
+  bool isArrayTT() const { return getKind() == K_Array; }
+  bool isStructTT() const { return getKind() == K_Struct; }
+
+  bool isByteTyOrPtrTo() const { return unwrappedType == llvm::Type::getInt8Ty(unwrappedType->getContext()); }
+  bool isIntegerTyOrPtrTo() const { return unwrappedType->isIntegerTy(); }
+  bool isFloatingPointTyOrPtrTo() const { return unwrappedType->isFloatingPointTy(); }
+
+  virtual llvm::SmallPtrSet<llvm::Type*, 4> getContainedLLVMTypes() const { return {unwrappedType}; }
+  virtual bool containsFloatingPointType() const { return unwrappedType->isFloatingPointTy(); }
+
   virtual int compareTransparency(const TransparentType& other) const;
   llvm::Type* toLLVMType() const;
-  virtual TransparentTypeKind getKind() const { return K_Scalar; }
 
   virtual bool operator==(const TransparentType& other) const;
   bool operator!=(const TransparentType& other) const { return !(*this == other); }
 
-  virtual std::shared_ptr<TransparentType> clone() const;
+  virtual std::unique_ptr<TransparentType> clone() const;
   std::string toString() const override;
 
-//protected:
+protected:
   llvm::Type* unwrappedType = nullptr;
   unsigned indirections = 0;
 
-  TransparentType() = default;
   TransparentType(const TransparentType& other) = default;
 
   TransparentType(llvm::Type* unwrappedType, unsigned indirections)
   : unwrappedType(unwrappedType), indirections(indirections) {}
-
-  void incrementIndirections(int increment);
 };
 
 class TransparentArrayType : public TransparentType {
+  friend TransparentTypeFactory;
+
 public:
   static bool classof(const TransparentType* type) { return type->getKind() == K_Array; }
 
+  TransparentTypeKind getKind() const override { return K_Array; }
+  bool isCompatibleLLVMType(llvm::Type* type) const override { return type->isArrayTy() || type->isVectorTy(); }
+
+  TransparentArrayType() = default;
+
   bool isOpaquePointer() const override;
+  llvm::SmallPtrSet<llvm::Type*, 4> getContainedLLVMTypes() const override;
   bool containsFloatingPointType() const override { return getArrayElementType()->containsFloatingPointType(); }
   int compareTransparency(const TransparentType& other) const override;
-  std::shared_ptr<TransparentType> getArrayElementType() const { return elementType; }
-  llvm::Type* getFullyUnwrappedType() const override { return getArrayElementType()->getFullyUnwrappedType(); }
-  llvm::SmallPtrSet<llvm::Type*, 4> getContainedTypes() const override;
-  std::shared_ptr<TransparentType> setArrayElementType(const std::shared_ptr<TransparentType>& elementType) {
-    return this->elementType = elementType;
-  }
-  TransparentTypeKind getKind() const override { return K_Array; }
+
+  TransparentType* getArrayElementType() const { return elementType.get(); }
+  void setArrayElementType(std::unique_ptr<TransparentType> elementType) { this->elementType = std::move(elementType); }
+
+  llvm::Type* getFullyUnwrappedLLVMType() const override { return getArrayElementType()->getFullyUnwrappedLLVMType(); }
 
   bool operator==(const TransparentType& other) const override;
 
-  std::shared_ptr<TransparentType> clone() const override;
+  std::unique_ptr<TransparentType> clone() const override;
   std::string toString() const override;
 
-//protected:
-  std::shared_ptr<TransparentType> elementType;
-
-  TransparentArrayType() = default;
+protected:
+  std::unique_ptr<TransparentType> elementType;
 
   TransparentArrayType(const TransparentArrayType& other)
   : TransparentType(other), elementType(other.elementType->clone()) {}
@@ -108,34 +131,48 @@ public:
 };
 
 class TransparentStructType : public TransparentType {
+  friend TransparentTypeFactory;
+
 public:
   static bool classof(const TransparentType* type) { return type->getKind() == K_Struct; }
 
-  auto begin() { return fieldTypes.begin(); }
-  auto end() { return fieldTypes.end(); }
-  auto begin() const { return fieldTypes.begin(); }
-  auto end() const { return fieldTypes.end(); }
+  TransparentTypeKind getKind() const override { return K_Struct; }
+  bool isCompatibleLLVMType(llvm::Type* type) const override { return type->isStructTy(); }
+
+  TransparentStructType() = default;
 
   bool isOpaquePointer() const override;
-  bool containsFloatingPointType() const override;
   int compareTransparency(const TransparentType& other) const override;
-  std::shared_ptr<TransparentType> getFieldType(unsigned i) const { return fieldTypes[i]; }
+
+  TransparentType* getFieldType(unsigned i) const { return fieldTypes[i].get(); }
+  void setFieldType(unsigned i, std::unique_ptr<TransparentType> fieldType) { fieldTypes[i] = std::move(fieldType); }
+  void addFieldType(std::unique_ptr<TransparentType> fieldType) { fieldTypes.push_back(std::move(fieldType)); }
   unsigned getNumFieldTypes() const { return fieldTypes.size(); }
+
+  auto getFieldTypes() const {
+    return fieldTypes | std::views::transform([](auto& smart_ptr) { return smart_ptr.get(); });
+  }
+
   bool isFieldPadding(unsigned i) const { return llvm::is_contained(paddingFields, i); }
+  void setFieldPadding(unsigned i, bool isPadding) { paddingFields[i] = isPadding; }
+  void addFieldPadding(bool isPadding) { paddingFields.push_back(isPadding); }
   unsigned getNumPaddingFields() const { return paddingFields.size(); }
-  llvm::SmallPtrSet<llvm::Type*, 4> getContainedTypes() const override;
-  TransparentTypeKind getKind() const override { return K_Struct; }
+
+  llvm::ArrayRef<unsigned> getPaddingFields() const {
+    return paddingFields;
+  }
+
+  llvm::SmallPtrSet<llvm::Type*, 4> getContainedLLVMTypes() const override;
+  bool containsFloatingPointType() const override;
 
   bool operator==(const TransparentType& other) const override;
 
-  std::shared_ptr<TransparentType> clone() const override;
+  std::unique_ptr<TransparentType> clone() const override;
   std::string toString() const override;
 
-//protected:
-  llvm::SmallVector<std::shared_ptr<TransparentType>, 8> fieldTypes;
+protected:
+  llvm::SmallVector<std::unique_ptr<TransparentType>, 8> fieldTypes;
   llvm::SmallVector<unsigned> paddingFields;
-
-  TransparentStructType() = default;
 
   TransparentStructType(const TransparentStructType& other)
   : TransparentType(other) {
@@ -146,29 +183,27 @@ public:
   }
 
   TransparentStructType(llvm::StructType* unwrappedType, unsigned indirections);
-
-  void setFieldType(unsigned i, std::shared_ptr<TransparentType> fieldType) { fieldTypes[i] = std::move(fieldType); }
 };
 
-} // namespace llvm
+} // namespace tda
 
 namespace std {
 
 template <>
-struct hash<shared_ptr<tda::TransparentType>> {
-  size_t operator()(const shared_ptr<tda::TransparentType>& ptr) const noexcept {
-    if (!ptr)
+struct hash<tda::TransparentType*> {
+  size_t operator()(const tda::TransparentType* type) const noexcept {
+    if (!type)
       return 0;
 
     size_t combined = 0;
     auto combine = [](size_t seed, size_t value) { return seed ^ (value + 0x9e3779b9 + (seed << 6) + (seed >> 2)); };
-    combined = combine(combined, hash<llvm::Type*>()(ptr->getUnwrappedType()));
-    combined = combine(combined, hash<unsigned>()(ptr->getIndirections()));
+    combined = combine(combined, hash<llvm::Type*>()(type->getUnwrappedLLVMType()));
+    combined = combine(combined, hash<unsigned>()(type->getIndirections()));
 
-    if (auto arrayPtr = dynamic_ptr_cast<tda::TransparentArrayType>(ptr))
-      combined = combine(combined, hash()(arrayPtr->getArrayElementType()));
-    else if (auto structPtr = dynamic_ptr_cast<tda::TransparentStructType>(ptr))
-      for (const auto& field : *structPtr)
+    if (auto* arrayType = llvm::dyn_cast<tda::TransparentArrayType>(type))
+      combined = combine(combined, hash()(arrayType->getArrayElementType()));
+    else if (auto* structType = llvm::dyn_cast<tda::TransparentStructType>(type))
+      for (const auto* field : structType->getFieldTypes())
         combined = combine(combined, hash()(field));
 
     return combined;
@@ -176,13 +211,27 @@ struct hash<shared_ptr<tda::TransparentType>> {
 };
 
 template <>
-struct equal_to<shared_ptr<tda::TransparentType>> {
-  bool operator()(const shared_ptr<tda::TransparentType>& lhs, const shared_ptr<tda::TransparentType>& rhs) const {
+struct equal_to<tda::TransparentType*> {
+  bool operator()(const tda::TransparentType* lhs, const tda::TransparentType* rhs) const {
     if (lhs == rhs)
       return true;
     if (!lhs || !rhs)
       return false;
     return *lhs == *rhs;
+  }
+};
+
+template <>
+struct hash<std::unique_ptr<tda::TransparentType>> {
+  size_t operator()(const std::unique_ptr<tda::TransparentType>& type) const noexcept {
+    return hash<tda::TransparentType*>()(type.get());
+  }
+};
+
+template <>
+struct equal_to<unique_ptr<tda::TransparentType>> {
+  bool operator()(const unique_ptr<tda::TransparentType>& lhs, const unique_ptr<tda::TransparentType>& rhs) const {
+    return equal_to<tda::TransparentType*>()(lhs.get(), rhs.get());
   }
 };
 

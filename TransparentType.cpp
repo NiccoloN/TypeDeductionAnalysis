@@ -27,12 +27,12 @@ bool containsPtrType(Type* type) {
   llvm_unreachable("Type not handled in containsPtrType");
 }
 
-std::shared_ptr<TransparentType> TransparentTypeFactory::create(Type* type) {
+std::unique_ptr<TransparentType> TransparentTypeFactory::create(Type* type) {
   assert(!containsPtrType(type) && "Long life to transparent pointers!");
   return create(type, 0);
 }
 
-std::shared_ptr<TransparentType> TransparentTypeFactory::create(const Value* value) {
+std::unique_ptr<TransparentType> TransparentTypeFactory::create(const Value* value) {
   assert(!isa<BasicBlock>(value) && "BasicBlock cannot have a transparent type");
   if (auto* function = dyn_cast<Function>(value))
     return create(function->getReturnType(), 0);
@@ -41,20 +41,26 @@ std::shared_ptr<TransparentType> TransparentTypeFactory::create(const Value* val
   return create(value->getType(), 0);
 }
 
-std::shared_ptr<TransparentType> TransparentTypeFactory::create(Type* unwrappedType, unsigned indirections) {
+std::unique_ptr<TransparentType> TransparentTypeFactory::create(Type* unwrappedType, unsigned indirections) {
   if (auto* structType = dyn_cast<StructType>(unwrappedType))
-    return std::shared_ptr<TransparentType>(new TransparentStructType(structType, indirections));
+    return std::unique_ptr<TransparentType>(new TransparentStructType(structType, indirections));
   if (auto* arrayType = dyn_cast<ArrayType>(unwrappedType))
-    return std::shared_ptr<TransparentType>(new TransparentArrayType(arrayType, indirections));
+    return std::unique_ptr<TransparentType>(new TransparentArrayType(arrayType, indirections));
   if (auto* vectorType = dyn_cast<VectorType>(unwrappedType))
-    return std::shared_ptr<TransparentType>(new TransparentArrayType(vectorType, indirections));
-  return std::shared_ptr<TransparentType>(new TransparentType(unwrappedType, indirections));
+    return std::unique_ptr<TransparentType>(new TransparentArrayType(vectorType, indirections));
+  return std::unique_ptr<TransparentType>(new TransparentType(unwrappedType, indirections));
 }
 
-std::shared_ptr<TransparentType> TransparentType::getPointedType() const {
+std::unique_ptr<TransparentType> TransparentType::getPointedType() const {
   assert(indirections > 0 && "Not a pointer type or opaque");
-  std::shared_ptr<TransparentType> pointedType = clone();
+  std::unique_ptr<TransparentType> pointedType = clone();
   pointedType->indirections--;
+  return pointedType;
+}
+
+std::unique_ptr<TransparentType> TransparentType::getPointerToType() const {
+  std::unique_ptr<TransparentType> pointedType = clone();
+  pointedType->indirections++;
   return pointedType;
 }
 
@@ -87,8 +93,8 @@ bool TransparentType::operator==(const TransparentType& other) const {
   return getKind() == other.getKind() && unwrappedType == other.unwrappedType && indirections == other.indirections;
 }
 
-std::shared_ptr<TransparentType> TransparentType::clone() const {
-  return std::shared_ptr<TransparentType>(new TransparentType(*this));
+std::unique_ptr<TransparentType> TransparentType::clone() const {
+  return std::unique_ptr<TransparentType>(new TransparentType(*this));
 }
 
 std::string TransparentType::toString() const {
@@ -124,9 +130,9 @@ int TransparentArrayType::compareTransparency(const TransparentType& other) cons
   return elementType->compareTransparency(*otherArray.elementType);
 }
 
-SmallPtrSet<Type*, 4> TransparentArrayType::getContainedTypes() const {
-  SmallPtrSet<Type*, 4> containedTypes = TransparentType::getContainedTypes();
-  SmallPtrSet<Type*, 4> elementContaineTypes = getArrayElementType()->getContainedTypes();
+SmallPtrSet<Type*, 4> TransparentArrayType::getContainedLLVMTypes() const {
+  SmallPtrSet<Type*, 4> containedTypes = TransparentType::getContainedLLVMTypes();
+  SmallPtrSet<Type*, 4> elementContaineTypes = getArrayElementType()->getContainedLLVMTypes();
   containedTypes.insert(elementContaineTypes.begin(), elementContaineTypes.end());
   return containedTypes;
 }
@@ -148,8 +154,8 @@ bool TransparentArrayType::operator==(const TransparentType& other) const {
   return *elementType == *otherArray.elementType;
 }
 
-std::shared_ptr<TransparentType> TransparentArrayType::clone() const {
-  return std::shared_ptr<TransparentType>(new TransparentArrayType(*this));
+std::unique_ptr<TransparentType> TransparentArrayType::clone() const {
+  return std::unique_ptr<TransparentType>(new TransparentArrayType(*this));
 }
 
 std::string TransparentArrayType::toString() const {
@@ -182,14 +188,14 @@ TransparentStructType::TransparentStructType(StructType* unwrappedType, unsigned
 bool TransparentStructType::isOpaquePointer() const {
   if (TransparentType::isOpaquePointer())
     return true;
-  for (const std::shared_ptr<TransparentType>& field : fieldTypes)
+  for (const std::unique_ptr<TransparentType>& field : fieldTypes)
     if (!field || field->isOpaquePointer())
       return true;
   return false;
 }
 
 bool TransparentStructType::containsFloatingPointType() const {
-  for (const std::shared_ptr<TransparentType>& fieldType : *this)
+  for (const TransparentType* fieldType : this->getFieldTypes())
     if (fieldType->containsFloatingPointType())
       return true;
   return false;
@@ -197,7 +203,7 @@ bool TransparentStructType::containsFloatingPointType() const {
 
 int TransparentStructType::compareTransparency(const TransparentType& other) const {
   if (!isa<TransparentStructType>(other)) {
-    assert(other.isOpaquePointer() || other.isBytePointer());
+    assert(other.isOpaquePointer() || other.isByteTyOrPtrTo());
     return 1;
   }
   const auto& otherStruct = cast<TransparentStructType>(other);
@@ -220,10 +226,10 @@ int TransparentStructType::compareTransparency(const TransparentType& other) con
   return overallResult;
 }
 
-SmallPtrSet<Type*, 4> TransparentStructType::getContainedTypes() const {
-  SmallPtrSet<Type*, 4> containedTypes = TransparentType::getContainedTypes();
-  for (auto& field : *this) {
-    SmallPtrSet<Type*, 4> elementContainedTypes = field->getContainedTypes();
+SmallPtrSet<Type*, 4> TransparentStructType::getContainedLLVMTypes() const {
+  SmallPtrSet<Type*, 4> containedTypes = TransparentType::getContainedLLVMTypes();
+  for (const TransparentType* field : getFieldTypes()) {
+    SmallPtrSet<Type*, 4> elementContainedTypes = field->getContainedLLVMTypes();
     containedTypes.insert(elementContainedTypes.begin(), elementContainedTypes.end());
   }
   return containedTypes;
@@ -250,12 +256,12 @@ bool TransparentStructType::operator==(const TransparentType& other) const {
   return true;
 }
 
-std::shared_ptr<TransparentType> TransparentStructType::clone() const {
-  return std::shared_ptr<TransparentType>(new TransparentStructType(*this));
+std::unique_ptr<TransparentType> TransparentStructType::clone() const {
+  return std::unique_ptr<TransparentType>(new TransparentStructType(*this));
 }
 
 std::string TransparentStructType::toString() const {
-  if (!unwrappedType || std::ranges::any_of(fieldTypes, [](const std::shared_ptr<TransparentType>& field) -> bool {
+  if (!unwrappedType || std::ranges::any_of(fieldTypes, [](const std::unique_ptr<TransparentType>& field) -> bool {
         return field == nullptr;
       }))
     return "InvalidType";
