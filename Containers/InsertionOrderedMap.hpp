@@ -1,7 +1,7 @@
 #pragma once
 
-#include <optional>
 #include <list>
+#include <optional>
 #include <unordered_map>
 
 /**
@@ -83,7 +83,7 @@ public:
       std::conditional_t<IsConst, typename std::list<Key>::const_iterator, typename std::list<Key>::iterator>;
     using iterator_proxy_type = iterator_proxy<IsConst>;
     using value_type = std::conditional_t<IsConst, const Value, Value>;
-    using pair_type = std::pair<const Key, value_type>;
+    using pair_type = std::pair<const Key&, value_type&>;
     using container_type = std::conditional_t<IsConst, const InsertionOrderedMap, InsertionOrderedMap>;
 
     /**
@@ -169,7 +169,7 @@ public:
      */
     pair_type operator*() const {
       const Key& key = *it;
-      value_type& value = container->map.at(*it).first;
+      value_type& value = container->map.at(key).first;
       return {key, value};
     }
 
@@ -182,7 +182,7 @@ public:
      */
     iterator_proxy_type* operator->() const {
       const Key& key = *it;
-      value_type& value = container->map.at(*it).first;
+      value_type& value = container->map.at(key).first;
       proxy.emplace(key, value);
       return &proxy.value();
     }
@@ -222,9 +222,7 @@ public:
       // New key.
       order.push_back(key);
       auto list_it = std::prev(order.end());
-      auto result = map.insert({
-        key, {value, list_it}
-      });
+      auto result = map.try_emplace(key, value, list_it);
       return {iterator_type(result.first->second.second, this), true};
     }
   }
@@ -283,9 +281,7 @@ public:
     else {
       // New key: insert at specified position.
       auto new_it = order.insert(pos_list, key);
-      auto result = map.insert({
-        key, {value, new_it}
-      });
+      auto result = map.try_emplace(key, value, new_it);
       return iterator_type(result.first->second.second, this);
     }
   }
@@ -336,9 +332,7 @@ public:
     if (it == map.end()) {
       order.push_back(key);
       auto list_it = std::prev(order.end());
-      auto result = map.insert({
-        key, {Value(), list_it}
-      });
+      auto result = map.try_emplace(key, Value(), list_it);
       return result.first->second.first;
     }
     return it->second.first;
