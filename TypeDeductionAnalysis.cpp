@@ -110,11 +110,7 @@ bool TypeDeductionAnalysis::deducePointerType(Value* value, TransparentType* cur
 }
 
 TypeDeductionAnalysis::CandidateSet& TypeDeductionAnalysis::deduceValuePointerType(Value* value) {
-  if (auto* globalValue = dyn_cast<GlobalValue>(value))
-    assert(globalValue->getValueType()->isPointerTy()
-           && "Trying to deduce the pointer type of a global value that is not pointer");
-  else
-    assert(value->getType()->isPointerTy() && "Trying to deduce the pointer type of a value that is not a pointer");
+  assert(value->getType()->isPointerTy() && "Trying to deduce the pointer type of a value that is not a pointer");
 
   CandidateSet& candidateTypes = this->candidateTypes[value];
 
@@ -329,7 +325,7 @@ std::unique_ptr<TransparentType> TypeDeductionAnalysis::getBestCandidateType(con
     if (!bestCandidate)
       bestCandidate = candidate.get();
     else if (isa<TransparentStructType>(candidate.get()) && isa<TransparentStructType>(bestCandidate)) {
-      const auto& candidateStruct = cast<TransparentStructType>(*candidate.get());
+      const auto& candidateStruct = cast<TransparentStructType>(*candidate);
       const auto& bestCandidateStruct = cast<TransparentStructType>(*bestCandidate);
       if (candidateStruct.getNumFieldTypes() == bestCandidateStruct.getNumFieldTypes()) {
         if (candidate->compareTransparency(*bestCandidate) == 1)
