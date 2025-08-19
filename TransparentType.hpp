@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <ranges>
+#include <set>
 
 namespace tda {
 
@@ -154,13 +155,10 @@ public:
   }
 
   bool isFieldPadding(unsigned i) const { return llvm::is_contained(paddingFields, i); }
-  void setFieldPadding(unsigned i, bool isPadding) { paddingFields[i] = isPadding; }
-  void addFieldPadding(bool isPadding) { paddingFields.push_back(isPadding); }
+  void addFieldPadding(unsigned i) { paddingFields.insert(i); }
   unsigned getNumPaddingFields() const { return paddingFields.size(); }
 
-  llvm::ArrayRef<unsigned> getPaddingFields() const {
-    return paddingFields;
-  }
+  std::set<unsigned> getPaddingFields() const { return paddingFields; }
 
   llvm::SmallPtrSet<llvm::Type*, 4> getContainedLLVMTypes() const override;
   bool containsFloatingPointType() const override;
@@ -172,14 +170,14 @@ public:
 
 protected:
   llvm::SmallVector<std::unique_ptr<TransparentType>, 8> fieldTypes;
-  llvm::SmallVector<unsigned> paddingFields;
+  std::set<unsigned> paddingFields;
 
   TransparentStructType(const TransparentStructType& other)
   : TransparentType(other) {
     for (const auto& field : other.fieldTypes)
       fieldTypes.push_back(field->clone());
     for (const auto& paddingFieldIdx : other.paddingFields)
-      paddingFields.push_back(paddingFieldIdx);
+      paddingFields.insert(paddingFieldIdx);
   }
 
   TransparentStructType(llvm::StructType* unwrappedType, unsigned indirections);

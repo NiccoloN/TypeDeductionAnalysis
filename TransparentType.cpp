@@ -179,7 +179,7 @@ TransparentStructType::TransparentStructType(StructType* unwrappedType, unsigned
       return structLayout->getElementOffset(i) == range.first;
     });
     if (isPadding)
-      paddingFields.push_back(i);
+      paddingFields.insert(i);
     Type* fieldType = unwrappedType->getElementType(i);
     fieldTypes.push_back(TransparentTypeFactory::create(fieldType, 0));
   }
@@ -282,6 +282,9 @@ std::string TransparentStructType::toString() const {
     ss << *fieldType;
   }
 
-  ss << " }" << std::string(indirections, '*');
+  ss << " }";
+  if (cast<StructType>(unwrappedType)->isPacked())
+    ss << ">";
+  ss << std::string(indirections, '*');
   return ss.str();
 }
