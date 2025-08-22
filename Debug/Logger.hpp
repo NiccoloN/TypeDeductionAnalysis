@@ -163,7 +163,7 @@ public:
     bool useColors = ostream.is_displayed();
 
     Color resColor;
-    bool bold = false;
+    bool bold = currentlyBold;
     if (color == Current)
       resColor = currentColor;
     else if (color == Bold) {
@@ -239,12 +239,13 @@ public:
 private:
   llvm::raw_ostream& ostream;
   std::list<std::string> contextTagStack;
-  Color currentColor;
-  unsigned indent;
-  bool isLineStart;
+  Color currentColor = Reset;
+  bool currentlyBold = false;
+  unsigned indent = 0;
+  bool isLineStart = true;
 
   Logger()
-  : ostream(getOutputStream()), currentColor(Reset), indent(0), isLineStart(true) {}
+  : ostream(getOutputStream()) {}
 
   Logger(const Logger&) = delete;
 

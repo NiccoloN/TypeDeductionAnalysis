@@ -7,7 +7,7 @@
 #include <llvm/IR/InstIterator.h>
 #include <llvm/IR/Instructions.h>
 
-#define DEBUG_TYPE "TypeDeductionAnalysis"
+#define DEBUG_TYPE "tda"
 
 using namespace llvm;
 using namespace tda;

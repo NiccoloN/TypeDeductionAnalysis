@@ -63,6 +63,7 @@ std::string toString(const T& obj) {
     obj.print(os);
   std::string result = os.str();
   result.erase(0, result.find_first_not_of(" \t\n\r"));
+  result.erase(result.find_last_not_of(" \t\n\r") + 1);
   return result;
 }
 

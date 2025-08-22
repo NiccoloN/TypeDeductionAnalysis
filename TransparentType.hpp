@@ -62,6 +62,7 @@ public:
   bool isArrayTT() const { return getKind() == K_Array; }
   bool isStructTT() const { return getKind() == K_Struct; }
 
+  bool isVoidTy() const { return unwrappedType->isVoidTy(); }
   bool isByteTyOrPtrTo() const { return unwrappedType == llvm::Type::getInt8Ty(unwrappedType->getContext()); }
   bool isIntegerTyOrPtrTo() const { return unwrappedType->isIntegerTy(); }
   bool isFloatingPointTyOrPtrTo() const { return unwrappedType->isFloatingPointTy(); }
