@@ -62,13 +62,18 @@ Logger& Logger::restorePrevContextTag() {
 }
 
 Logger& Logger::setColor(Color color) {
-  if (color != Current)
+  if (color == Bold)
+    currentlyBold = true;
+  else if (color == Reset)
+    resetColor();
+  else if (color != Current)
     currentColor = color;
   return *this;
 }
 
 Logger& Logger::resetColor() {
   currentColor = Reset;
+  currentlyBold = false;
   return *this;
 }
 
