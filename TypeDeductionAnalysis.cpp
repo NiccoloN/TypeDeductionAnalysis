@@ -29,10 +29,7 @@ TypeDeductionAnalysis::Result TypeDeductionAnalysis::run(Module& m, ModuleAnalys
     }
     // Deduce instructions' types
     for (Instruction& inst : instructions(f)) {
-      if (inst.getType()->isPointerTy())
-        deducePointerType(&inst);
-      else // If there is nothing to deduce just save the transparent type of the value
-        result.transparentTypes[&inst] = TransparentTypeFactory::create(&inst);
+      deducePointerType(&inst);
       // Also save the transparent type of constants
       for (Use& operand : inst.operands())
         if (auto* constant = dyn_cast<Constant>(operand.get()))
@@ -40,22 +37,13 @@ TypeDeductionAnalysis::Result TypeDeductionAnalysis::run(Module& m, ModuleAnalys
     }
     // Deduce function arguments' types
     for (Argument& arg : f.args())
-      if (arg.getType()->isPointerTy())
-        deducePointerType(&arg);
-      else // If there is nothing to deduce just save the transparent type of the value
-        result.transparentTypes[&arg] = TransparentTypeFactory::create(&arg);
+      deducePointerType(&arg);
     // Deduce functions' types
-    if (f.getReturnType()->isPointerTy())
-      deducePointerType(&f);
-    else // If there is nothing to deduce just save the transparent type of the value
-      result.transparentTypes[&f] = TransparentTypeFactory::create(&f);
+    deducePointerType(&f);
   }
   // Deduce global values' types
   for (GlobalValue& globalValue : m.globals())
-    if (globalValue.getValueType()->isPointerTy())
-      deducePointerType(&globalValue);
-    else // If there is nothing to deduce just save the transparent type of the value
-      result.transparentTypes[&globalValue] = TransparentTypeFactory::create(&globalValue);
+    deducePointerType(&globalValue);
 
   // Continue deducing types until there is no change
   unsigned iterations = 1;
@@ -98,6 +86,8 @@ bool TypeDeductionAnalysis::deducePointerType(Value* value, TransparentType* cur
     candidateTypes = &deduceArgumentPointerType(argument);
   else
     candidateTypes = &deduceValuePointerType(value);
+  candidateTypes->insert(TransparentTypeFactory::create(value));
+
   std::unique_ptr<TransparentType> newPointerType = getBestCandidateType(*candidateTypes);
   LLVM_DEBUG(logDeduction(newPointerType.get(), *candidateTypes));
   if (!newPointerType)
@@ -110,12 +100,17 @@ bool TypeDeductionAnalysis::deducePointerType(Value* value, TransparentType* cur
 }
 
 TypeDeductionAnalysis::CandidateSet& TypeDeductionAnalysis::deduceValuePointerType(Value* value) {
-  assert(value->getType()->isPointerTy() && "Trying to deduce the pointer type of a value that is not a pointer");
-
   CandidateSet& candidateTypes = this->candidateTypes[value];
 
   // Deduce from value
-  if (auto* allocaInst = dyn_cast<AllocaInst>(value))
+  if (auto* globalVar = dyn_cast<GlobalVariable>(value)) {
+    if (globalVar->hasInitializer()) {
+      std::unique_ptr<TransparentType> candidateType = getOrCreateDeducedType(globalVar->getInitializer())->clone();
+      candidateType->incrementIndirections(1);
+      candidateTypes.emplace(std::move(candidateType));
+    }
+  }
+  else if (auto* allocaInst = dyn_cast<AllocaInst>(value))
     candidateTypes.emplace(TransparentTypeFactory::create(allocaInst->getAllocatedType(), 1));
   else if (auto* loadInst = dyn_cast<LoadInst>(value)) {
     std::unique_ptr<TransparentType> candidateType = getOrCreateDeducedType(loadInst->getPointerOperand())->clone();
@@ -270,31 +265,28 @@ TypeDeductionAnalysis::CandidateSet& TypeDeductionAnalysis::deduceValuePointerTy
 }
 
 TypeDeductionAnalysis::CandidateSet& TypeDeductionAnalysis::deduceFunctionPointerType(Function* function) {
-  assert(function->getReturnType()->isPointerTy()
-         && "Trying to deduce the pointer type of a function that doesn't return a pointer");
-
   CandidateSet& candidateTypes = this->candidateTypes[function];
   for (BasicBlock& bb : *function) {
     Instruction* termInst = bb.getTerminator();
     if (auto* returnInst = dyn_cast<ReturnInst>(termInst))
-      candidateTypes.emplace(getOrCreateDeducedType(returnInst->getReturnValue())->clone());
+      if (Value* retValue = returnInst->getReturnValue())
+        candidateTypes.emplace(getOrCreateDeducedType(retValue)->clone());
   }
   return candidateTypes;
 }
 
 TypeDeductionAnalysis::CandidateSet& TypeDeductionAnalysis::deduceArgumentPointerType(Argument* argument) {
-  assert(argument->getType()->isPointerTy() && "Trying to deduce the pointer type of a argument that is not a pointer");
-
   CandidateSet& candidateTypes = this->candidateTypes[argument];
 
   unsigned argIndex = argument->getArgNo();
   Function* parentF = argument->getParent();
   for (User* functionUser : parentF->users())
     if (auto* callBase = dyn_cast<CallBase>(functionUser))
-      if (argIndex < callBase->arg_size()) {
-        Value* value = callBase->getArgOperand(argIndex);
-        candidateTypes.emplace(getOrCreateDeducedType(value)->clone());
-      }
+      if (callBase->getCalledFunction() == parentF)
+        if (argIndex < callBase->arg_size()) {
+          Value* value = callBase->getArgOperand(argIndex);
+          candidateTypes.emplace(getOrCreateDeducedType(value)->clone());
+        }
   candidateTypes.merge(deduceValuePointerType(argument));
   return candidateTypes;
 }

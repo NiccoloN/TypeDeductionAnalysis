@@ -203,7 +203,7 @@ bool TransparentStructType::containsFloatingPointType() const {
 
 int TransparentStructType::compareTransparency(const TransparentType& other) const {
   if (!isa<TransparentStructType>(other)) {
-    assert(other.isOpaquePointer() || other.isByteTyOrPtrTo());
+    //assert(other.isOpaquePointer() || other.isByteTyOrPtrTo());
     return 1;
   }
   const auto& otherStruct = cast<TransparentStructType>(other);
