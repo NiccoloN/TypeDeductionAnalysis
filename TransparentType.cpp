@@ -68,8 +68,8 @@ int TransparentType::compareTransparency(const TransparentType& other) const {
   if (*this == other)
     return 0;
 
-  bool thisOpaque = isOpaquePointer();
-  bool otherOpaque = other.isOpaquePointer();
+  bool thisOpaque = isOpaque();
+  bool otherOpaque = other.isOpaque();
   if (thisOpaque && !otherOpaque)
     return -1;
   if (!thisOpaque && otherOpaque)
@@ -111,10 +111,10 @@ void TransparentType::incrementIndirections(int increment) {
   indirections += increment;
 }
 
-bool TransparentArrayType::isOpaquePointer() const {
-  if (TransparentType::isOpaquePointer())
+bool TransparentArrayType::isOpaque() const {
+  if (TransparentType::isOpaque())
     return true;
-  return elementType->isOpaquePointer();
+  return elementType->isOpaque();
 }
 
 int TransparentArrayType::compareTransparency(const TransparentType& other) const {
@@ -185,11 +185,11 @@ TransparentStructType::TransparentStructType(StructType* unwrappedType, unsigned
   }
 }
 
-bool TransparentStructType::isOpaquePointer() const {
-  if (TransparentType::isOpaquePointer())
+bool TransparentStructType::isOpaque() const {
+  if (TransparentType::isOpaque())
     return true;
   for (const std::unique_ptr<TransparentType>& field : fieldTypes)
-    if (!field || field->isOpaquePointer())
+    if (!field || field->isOpaque())
       return true;
   return false;
 }

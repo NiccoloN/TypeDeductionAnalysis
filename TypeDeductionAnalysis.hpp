@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Containers/InsertionOrderedMap.hpp"
-#include "StructPaddingInfo.hpp"
 #include "TransparentType.hpp"
 
 #include <llvm/IR/PassManager.h>

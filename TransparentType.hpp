@@ -55,8 +55,8 @@ public:
   std::unique_ptr<TransparentType> getPointerToType() const;
 
   bool isValid() const { return unwrappedType; }
-  virtual bool isOpaquePointer() const { return unwrappedType->isPointerTy(); }
-  bool isPointerTy() const { return indirections > 0 || isOpaquePointer(); }
+  virtual bool isOpaque() const { return unwrappedType->isPointerTy(); }
+  bool isPointerTy() const { return indirections > 0 || isOpaque(); }
 
   bool isScalarTT() const { return getKind() == K_Scalar; }
   bool isArrayTT() const { return getKind() == K_Array; }
@@ -100,7 +100,7 @@ public:
 
   TransparentArrayType() = default;
 
-  bool isOpaquePointer() const override;
+  bool isOpaque() const override;
   llvm::SmallPtrSet<llvm::Type*, 4> getContainedLLVMTypes() const override;
   bool containsFloatingPointType() const override { return getArrayElementType()->containsFloatingPointType(); }
   int compareTransparency(const TransparentType& other) const override;
@@ -143,7 +143,7 @@ public:
 
   TransparentStructType() = default;
 
-  bool isOpaquePointer() const override;
+  bool isOpaque() const override;
   int compareTransparency(const TransparentType& other) const override;
 
   TransparentType* getFieldType(unsigned i) const { return fieldTypes[i].get(); }
