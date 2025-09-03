@@ -3,11 +3,17 @@
 #include "TypeDeductionAnalysis.hpp"
 #include "TypeDeductionAnalysisInfo.hpp"
 
+#include <llvm/ADT/Statistic.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/InstIterator.h>
 #include <llvm/IR/Instructions.h>
 
 #define DEBUG_TYPE "tda"
+
+STATISTIC(stat0ptrTypes, "Pointer types to deduce");
+STATISTIC(stat1transparentPtrTypes, "Transparent deduced pointer types");
+STATISTIC(stat2partiallyTransparentPtrTypes, "Partially transparent deduced pointer types");
+STATISTIC(stat3opaquePtrTypes, "Not deduced pointer types");
 
 using namespace llvm;
 using namespace tda;
@@ -59,10 +65,28 @@ TypeDeductionAnalysis::Result TypeDeductionAnalysis::run(Module& m, ModuleAnalys
   LLVM_DEBUG(log().logln("[Deduction completed]", Logger::Blue));
   LLVM_DEBUG(logDeducedTypes());
 
-  // Save deduced transparent types
-  for (auto [value, deducedType] : deducedTypes)
+  stat0ptrTypes = 0;
+  stat1transparentPtrTypes = 0;
+  stat2partiallyTransparentPtrTypes = 0;
+  stat3opaquePtrTypes = 0;
+  // Save deduced transparent types and compute statistics
+  for (auto [value, deducedType] : deducedTypes) {
+    // Statistics
+    if (value->getType()->isPointerTy()) {
+      stat0ptrTypes++;
+      if (deducedType) {
+        if (deducedType->isOpaque())
+          stat2partiallyTransparentPtrTypes++;
+        else
+          stat1transparentPtrTypes++;
+      }
+      else
+        stat3opaquePtrTypes++;
+    }
+    // Move into result
     if (deducedType)
       result.transparentTypes[value] = std::move(deducedType);
+  }
 
   LLVM_DEBUG(log().logln("[End of TypeDeductionAnalysis]", Logger::Magenta));
   return result;
@@ -72,7 +96,7 @@ bool TypeDeductionAnalysis::deducePointerType(Value* value, TransparentType* cur
   bool deducedTypesChanged = false;
   if (!currentDeducedType)
     currentDeducedType = deducedTypes[value].get();
-  if (currentDeducedType && !currentDeducedType->isOpaquePointer())
+  if (currentDeducedType && !currentDeducedType->isOpaque())
     return false;
   Logger& logger = log();
   LLVM_DEBUG(logger.log("[Deducing type of] ", Logger::Bold).logValueln(value));
@@ -351,7 +375,7 @@ void TypeDeductionAnalysis::logDeducedTypes() {
     indenter.increaseIndent();
     logger.log("deduced pointer type: ");
     if (deducedType) {
-      auto color = deducedType->isOpaquePointer() ? Logger::Yellow : Logger::Green;
+      auto color = deducedType->isOpaque() ? Logger::Yellow : Logger::Green;
       logger.logln(deducedType, color);
     }
     else {
