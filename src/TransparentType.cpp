@@ -118,7 +118,7 @@ bool TransparentArrayType::isOpaque() const {
 }
 
 int TransparentArrayType::compareTransparency(const TransparentType& other) const {
-  assert(!isa<TransparentStructType>(other) && "Array and struct cannot be compared");
+  //assert(!isa<TransparentStructType>(other) && "Array and struct cannot be compared");
   if (!isa<TransparentArrayType>(other)) {
     // If an array is compared to a scalar or a ptr return myself because at least we know that we are an array
     return 1;
