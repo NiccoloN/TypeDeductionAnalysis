@@ -10,10 +10,10 @@
 
 #define DEBUG_TYPE "tda"
 
-STATISTIC(stat0ptrTypes, "Pointer types to deduce");
-STATISTIC(stat1transparentPtrTypes, "Transparent deduced pointer types");
-STATISTIC(stat2partiallyTransparentPtrTypes, "Partially transparent deduced pointer types");
-STATISTIC(stat3opaquePtrTypes, "Not deduced pointer types");
+STATISTIC(stat0ptrTypes, "Total pointer types to deduce");
+STATISTIC(stat1transparentPtrTypes, "Transparent pointers deduced");
+STATISTIC(stat2partiallyTransparentPtrTypes, "Partially transparent pointers deduced");
+STATISTIC(stat3opaquePtrs, "Opaque pointers (not deduced)");
 
 using namespace llvm;
 using namespace tda;
@@ -68,20 +68,21 @@ TypeDeductionAnalysis::Result TypeDeductionAnalysis::run(Module& m, ModuleAnalys
   stat0ptrTypes = 0;
   stat1transparentPtrTypes = 0;
   stat2partiallyTransparentPtrTypes = 0;
-  stat3opaquePtrTypes = 0;
+  stat3opaquePtrs = 0;
   // Save deduced transparent types and compute statistics
   for (auto [value, deducedType] : deducedTypes) {
     // Statistics
     if (value->getType()->isPointerTy()) {
       stat0ptrTypes++;
-      if (deducedType) {
-        if (deducedType->isOpaque())
+      if (deducedType)
+        if (!deducedType->isOpaque())
+          stat1transparentPtrTypes++;
+        else if (!deducedType->getUnwrappedLLVMType()->isPointerTy() || deducedType->getIndirections() != 0)
           stat2partiallyTransparentPtrTypes++;
         else
-          stat1transparentPtrTypes++;
-      }
+          stat3opaquePtrs++;
       else
-        stat3opaquePtrTypes++;
+        stat3opaquePtrs++;
     }
     // Move into result
     if (deducedType)
