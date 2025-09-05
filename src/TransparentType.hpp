@@ -17,9 +17,8 @@ class TransparentType;
 
 class TransparentTypeFactory {
 public:
-  static std::unique_ptr<TransparentType> create(llvm::Type* type);
   static std::unique_ptr<TransparentType> create(const llvm::Value* value);
-  static std::unique_ptr<TransparentType> create(llvm::Type* unwrappedType, unsigned indirections);
+  static std::unique_ptr<TransparentType> create(llvm::Type* unwrappedType, unsigned indirections = 0);
 };
 
 class TransparentType : public Printable {

@@ -36,10 +36,11 @@ static void insertPaddingInfo(DICompositeType* diCompositeType,
     if (!name.empty()) {
       std::string prefix;
       switch (diCompositeType->getTag()) {
-      case dwarf::DW_TAG_class_type:     prefix = "class."; break;
-      case dwarf::DW_TAG_structure_type: prefix = "struct."; break;
-      case dwarf::DW_TAG_union_type:     prefix = "union."; break;
-      default:                           llvm_unreachable("Unexpected DWARF tag for composite type");
+      case dwarf::DW_TAG_class_type:       prefix = "class."; break;
+      case dwarf::DW_TAG_structure_type:   prefix = "struct."; break;
+      case dwarf::DW_TAG_union_type:       prefix = "union."; break;
+      case dwarf::DW_TAG_enumeration_type: return;
+      default:                             llvm_unreachable("Unexpected DWARF tag for composite type");
       }
       structType = StructType::getTypeByName(ctx, prefix + name.str());
     }

@@ -27,11 +27,6 @@ bool containsPtrType(Type* type) {
   llvm_unreachable("Type not handled in containsPtrType");
 }
 
-std::unique_ptr<TransparentType> TransparentTypeFactory::create(Type* type) {
-  assert(!containsPtrType(type) && "Long life to transparent pointers!");
-  return create(type, 0);
-}
-
 std::unique_ptr<TransparentType> TransparentTypeFactory::create(const Value* value) {
   assert(!isa<BasicBlock>(value) && "BasicBlock cannot have a transparent type");
   if (auto* function = dyn_cast<Function>(value))
@@ -118,7 +113,7 @@ bool TransparentArrayType::isOpaque() const {
 }
 
 int TransparentArrayType::compareTransparency(const TransparentType& other) const {
-  //assert(!isa<TransparentStructType>(other) && "Array and struct cannot be compared");
+  // assert(!isa<TransparentStructType>(other) && "Array and struct cannot be compared");
   if (!isa<TransparentArrayType>(other)) {
     // If an array is compared to a scalar or a ptr return myself because at least we know that we are an array
     return 1;
@@ -162,7 +157,15 @@ std::string TransparentArrayType::toString() const {
   if (!unwrappedType || !elementType)
     return "InvalidType";
   std::stringstream ss;
-  ss << "[" << unwrappedType->getArrayNumElements() << " x " << *elementType << "]";
+  if (isa<ArrayType>(unwrappedType))
+    ss << "[" << unwrappedType->getArrayNumElements() << " x " << *elementType << "]";
+  else if (auto* vectorType = dyn_cast<VectorType>(unwrappedType)) {
+    ElementCount elementCount = vectorType->getElementCount();
+    ss << "<";
+    if (elementCount.isScalable())
+      ss << "vscale x ";
+    ss << elementCount.getKnownMinValue() << " x " << *elementType << ">";
+  }
   ss << std::string(indirections, '*');
   return ss.str();
 }
@@ -203,7 +206,7 @@ bool TransparentStructType::containsFloatingPointType() const {
 
 int TransparentStructType::compareTransparency(const TransparentType& other) const {
   if (!isa<TransparentStructType>(other)) {
-    //assert(other.isOpaquePointer() || other.isByteTyOrPtrTo());
+    // assert(other.isOpaquePointer() || other.isByteTyOrPtrTo());
     return 1;
   }
   const auto& otherStruct = cast<TransparentStructType>(other);
