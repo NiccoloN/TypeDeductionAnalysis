@@ -161,9 +161,7 @@ TypeDeductionAnalysis::CandidateSet& TypeDeductionAnalysis::deduceValuePointerTy
         if (!isa<ConstantInt>(index) || cast<ConstantInt>(index)->getZExtValue() != 0) {
           // We don't really know which type we are looking at when the first index is different from 0
           // At most we can get some information directly from the gep source type
-          Type* sourceElementType = gepInst->getSourceElementType();
-          candidateType =
-            !sourceElementType->isPointerTy() ? TransparentTypeFactory::create(sourceElementType) : nullptr;
+          TransparentTypeFactory::create(gepInst->getSourceElementType());
           currType = nullptr;
           break;
         }
@@ -180,14 +178,21 @@ TypeDeductionAnalysis::CandidateSet& TypeDeductionAnalysis::deduceValuePointerTy
         // any array index selects the element type
         currType = arrayType->getArrayElementType();
       }
+      else if (candidateType->getUnwrappedLLVMType()->isPointerTy()) {
+        // We don't know anything until we deduce this pointer type
+        // At most we can get some information directly from the gep source type
+        TransparentTypeFactory::create(gepInst->getSourceElementType());
+        currType = nullptr;
+        break;
+      }
       else
         llvm_unreachable("Invalid gep instruction");
     }
     if (currType) {
       candidateType = currType->clone();
       candidateType->incrementIndirections(1);
-      candidateTypes.emplace(std::move(candidateType));
     }
+    candidateTypes.emplace(std::move(candidateType));
   }
   else if (auto* callInst = dyn_cast<CallBase>(value)) {
     if (Function* calledFunction = callInst->getCalledFunction())
@@ -263,11 +268,15 @@ TypeDeductionAnalysis::CandidateSet& TypeDeductionAnalysis::deduceValuePointerTy
               currType = structType->getFieldType(fieldIndex);
           }
           else if (auto arrayType = dyn_cast<TransparentArrayType>(currType)) {
-            // any array index selects the element type
+            // Any array index selects the element type
             if (isLastIndex)
               arrayType->setArrayElementType(getNewContainedType(arrayType->getArrayElementType()));
             else
               currType = arrayType->getArrayElementType();
+          }
+          else if (candidateType->getUnwrappedLLVMType()->isPointerTy()) {
+            // Can't do anything until we deduce this pointer type
+            break;
           }
           else
             llvm_unreachable("Invalid gep instruction");
