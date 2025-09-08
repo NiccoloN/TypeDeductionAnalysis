@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Utils/PrintUtils.hpp"
+#include "../Utils/PrintUtils.hpp"
 
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/DebugInfoMetadata.h>
@@ -16,6 +16,7 @@ public:
   using ByteRange = std::pair<unsigned, unsigned>;
 
   StructPaddingInfo() = default;
+  StructPaddingInfo(llvm::ArrayRef<ByteRange> ranges);
   StructPaddingInfo(const llvm::DICompositeType* diCompositeType);
 
   llvm::ArrayRef<ByteRange> getPaddingRanges() const { return paddingByteRanges; }

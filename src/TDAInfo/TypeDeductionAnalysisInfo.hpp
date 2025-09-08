@@ -28,4 +28,4 @@ private:
   static std::unordered_map<llvm::StructType*, StructPaddingInfo> getStructPaddingInfo(llvm::Module& m);
 };
 
-} // namespace llvm
+} // namespace tda
