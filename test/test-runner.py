@@ -186,7 +186,7 @@ def main():
         # Optional debug log file (stdout of opt)
         log_fp = None
         if args.debug:
-            log_fp = open(os.path.join(str(bench_dir.resolve()), "bench.log"), "w", encoding="utf-8")
+            log_fp = open(os.path.join(str(bench_dir.resolve()), f"{bench_name}.log"), "w", encoding="utf-8")
 
         try:
             sources_for_compile = srcs + resolved_extra_srcs
@@ -206,9 +206,10 @@ def main():
             bench_out  = derive_output_name(tmp, bench_name, "tda")
 
             def run_baseline_once():
-                t_opt, out, _, _ = do_opt(args.opt, linked_ll, base_passes, base_ll)
+                t_opt, out, err, _ = do_opt(args.opt, linked_ll, base_passes, base_ll)
                 if log_fp and out:
                     log_fp.write(out)
+                    log_fp.write(err)
                     log_fp.write("\n")
                     log_fp.flush()
                 rc, _, _, err = run([clang, "-O0", base_ll, "-o", bench_base, *link_flags])
@@ -219,6 +220,7 @@ def main():
                 t_opt, out, stats, _ = do_opt(args.opt, linked_ll, tda_passes, tda_ll, extra_args=tda_extra)
                 if log_fp and out:
                     log_fp.write(out)
+                    log_fp.write(stats)
                     log_fp.write("\n")
                     log_fp.flush()
                 rc, _, _, err = run([clang, "-O0", tda_ll, "-o", bench_out, *link_flags])
