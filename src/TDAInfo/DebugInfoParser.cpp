@@ -1,32 +1,18 @@
-#include "TypeDeductionAnalysisInfo.hpp"
+#include "DebugInfoParser.hpp"
 
 #include <llvm/BinaryFormat/Dwarf.h>
-#include <llvm/IR/DebugInfoMetadata.h>
+#include <llvm/IR/DataLayout.h>
+#include <llvm/IR/Module.h>
 
 using namespace llvm;
 using namespace tda;
 
-TypeDeductionAnalysisInfo& TypeDeductionAnalysisInfo::getInstance() {
-  static TypeDeductionAnalysisInfo instance;
-  return instance;
-}
-
-void TypeDeductionAnalysisInfo::initialize(Module& m) {
-  structPaddingInfo = getStructPaddingInfo(m);
-  dataLayout = &m.getDataLayout();
-}
-
-std::optional<StructPaddingInfo> TypeDeductionAnalysisInfo::getStructPaddingInfo(StructType* t) const {
-  auto iter = structPaddingInfo.find(t);
-  return iter != structPaddingInfo.end() ? std::optional(iter->second) : std::nullopt;
-}
-
-static void insertPaddingInfo(DICompositeType* diCompositeType,
-                              std::unordered_map<StructType*, StructPaddingInfo>& paddingInfoMap,
-                              SmallDenseSet<DICompositeType*>& visited,
-                              LLVMContext& ctx,
-                              const DataLayout& dataLayout,
-                              StructType* structType = nullptr) {
+void DebugInfoParser::insertPaddingInfo(DICompositeType* diCompositeType,
+                                        std::unordered_map<StructType*, StructPaddingInfo>& paddingInfoMap,
+                                        SmallDenseSet<DICompositeType*>& visited,
+                                        LLVMContext& ctx,
+                                        const DataLayout& dataLayout,
+                                        StructType* structType) {
   if (!visited.insert(diCompositeType).second)
     return;
   // If we already know the IR struct that represents this DI type,
@@ -77,9 +63,9 @@ static void insertPaddingInfo(DICompositeType* diCompositeType,
   }
 }
 
-std::unordered_map<StructType*, StructPaddingInfo> TypeDeductionAnalysisInfo::getStructPaddingInfo(Module& m) {
+std::unordered_map<StructType*, StructPaddingInfo> DebugInfoParser::getStructPaddingInfo(const Module& module) {
   std::unordered_map<StructType*, StructPaddingInfo> structPaddingInfo;
-  if (NamedMDNode* compileUnits = m.getNamedMetadata("llvm.dbg.cu")) {
+  if (NamedMDNode* compileUnits = module.getNamedMetadata("llvm.dbg.cu")) {
     SmallVector<DICompositeType*, 32> diCompositeTypes;
     // Collect top-level composite types from debug info
     for (MDNode* compileUnitMd : compileUnits->operands())
@@ -89,8 +75,8 @@ std::unordered_map<StructType*, StructPaddingInfo> TypeDeductionAnalysisInfo::ge
             diCompositeTypes.push_back(diCompositeType);
     // Recursively insert padding info of composite types
     SmallDenseSet<DICompositeType*> visited;
-    LLVMContext& ctx = m.getContext();
-    const DataLayout& dataLayout = m.getDataLayout();
+    LLVMContext& ctx = module.getContext();
+    const DataLayout& dataLayout = module.getDataLayout();
     for (DICompositeType* diCompositeType : diCompositeTypes)
       insertPaddingInfo(diCompositeType, structPaddingInfo, visited, ctx, dataLayout);
   }

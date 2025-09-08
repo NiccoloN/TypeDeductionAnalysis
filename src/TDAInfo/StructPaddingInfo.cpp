@@ -5,6 +5,13 @@
 using namespace llvm;
 using namespace tda;
 
+StructPaddingInfo::StructPaddingInfo(const ArrayRef<ByteRange> ranges) {
+  paddingByteRanges.clear();
+  paddingByteRanges.reserve(ranges.size());
+  for (const auto& range : ranges)
+    paddingByteRanges.push_back(range);
+}
+
 StructPaddingInfo::StructPaddingInfo(const DICompositeType* diCompositeType) {
   const unsigned structSize = diCompositeType->getSizeInBits() / 8;
 
