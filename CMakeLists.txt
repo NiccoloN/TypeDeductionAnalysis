@@ -4,14 +4,19 @@ add_llvm_library(TypeDeductionAnalysis STATIC
   src/Debug/Logger.cpp
   src/Utils/PrintUtils.hpp
   src/Utils/PtrCasts.hpp
-  src/StructPaddingInfo.hpp
-  src/StructPaddingInfo.cpp
+  src/TDAInfo/DebugInfoParser.hpp
+  src/TDAInfo/DebugInfoParser.cpp
+  src/TDAInfo/StructPaddingInfo.hpp
+  src/TDAInfo/StructPaddingInfo.cpp
+  src/TDAInfo/TBAAParser.hpp
+  src/TDAInfo/TBAAParser.cpp
+  src/TDAInfo/TypeDeductionAnalysisInfo.hpp
+  src/TDAInfo/TypeDeductionAnalysisInfo.cpp
+  src/DeductionFunctions.cpp
   src/TransparentType.hpp
   src/TransparentType.cpp
   src/TypeDeductionAnalysis.hpp
   src/TypeDeductionAnalysis.cpp
-  src/TypeDeductionAnalysisInfo.hpp
-  src/TypeDeductionAnalysisInfo.cpp
 )
 target_include_directories(TypeDeductionAnalysis PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET TypeDeductionAnalysis PROPERTY POSITION_INDEPENDENT_CODE ON)

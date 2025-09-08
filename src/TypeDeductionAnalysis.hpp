@@ -3,6 +3,7 @@
 #include "Containers/InsertionOrderedMap.hpp"
 #include "TransparentType.hpp"
 
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/PassManager.h>
 
 #include <unordered_set>
@@ -23,18 +24,25 @@ public:
 private:
   using CandidateSet = std::unordered_set<std::unique_ptr<TransparentType>>;
 
-  InsertionOrderedMap<llvm::Value*, std::unique_ptr<TransparentType>> deducedTypes;
-  llvm::DenseMap<llvm::Value*, CandidateSet> candidateTypes;
+  std::list<llvm::Value*> deductionQueue;
+  std::unordered_map<llvm::Value*, std::unique_ptr<TransparentType>> deducedTypes;
+  llvm::SmallPtrSet<llvm::Instruction*, 32> tbaaUsedForInstruction;
+  bool changed = true;
 
-  bool deducePointerType(llvm::Value* value, TransparentType* currentDeducedType = nullptr);
-  CandidateSet& deduceValuePointerType(llvm::Value* value);
-  CandidateSet& deduceFunctionPointerType(llvm::Function* function);
-  CandidateSet& deduceArgumentPointerType(llvm::Argument* argument);
+  const TransparentType* updateDeducedType(llvm::Value* value, std::unique_ptr<TransparentType> deducedType);
   const TransparentType* getOrCreateDeducedType(llvm::Value* value);
-  std::unique_ptr<TransparentType> getBestCandidateType(const CandidateSet& candidates) const;
 
-  void logDeduction(const TransparentType* bestCandidate, const CandidateSet& candidates);
+  void deduceFromValue(llvm::Value* value);
+
+  void deduceFromGlobalVariable(llvm::GlobalVariable* globalVar);
+  void deduceFromAlloca(llvm::AllocaInst* alloca);
+  void deduceFromLoadStore(llvm::Instruction* inst);
+  void deduceFromGep(llvm::GetElementPtrInst* gep);
+
+  void deduceFromCall(llvm::CallBase* call);
+  void deduceFromFunction(llvm::Function* function);
+
   void logDeducedTypes();
 };
 
-} // namespace llvm
+} // namespace tda
