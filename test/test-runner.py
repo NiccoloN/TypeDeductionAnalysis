@@ -46,10 +46,15 @@ def parse_common_args(common_args: str):
                 comp_flags.append(tok)
     return comp_flags, link_flags, extra_srcs
 
-def emit_ll(clang, srcs, outdir, add_flags, add_include_dir=None):
+def emit_ll(clang_base, srcs, outdir, add_flags, add_include_dir=None):
     lls = []
     os.makedirs(outdir, exist_ok=True)
     for s in srcs:
+        clang = clang_base
+        use_cxx = (pathlib.Path(s).suffix == ".cpp")
+        if use_cxx:
+            clang = clang_base + "++"
+
         ll = os.path.join(outdir, pathlib.Path(s).stem + ".ll")
         cmd = [clang, "-O0", "-S", "-emit-llvm", "-c", s, "-o", ll, *add_flags]
         if add_include_dir:
@@ -158,11 +163,7 @@ def main():
             continue
 
         # Any .cpp among all sources (including extra common sources)?
-        srcs_all = srcs + extra_srcs_from_common
-        use_cxx = args.cxx or any(pathlib.Path(s).suffix == ".cpp" for s in srcs_all)
         clang = args.clang
-        if use_cxx and os.path.basename(clang) == "clang":
-            clang = clang + "++"
 
         # Per-bench include dir
         add_include = str(bench_dir.absolute())
@@ -205,7 +206,13 @@ def main():
             bench_base = derive_output_name(tmp, bench_name, "base")
             bench_out  = derive_output_name(tmp, bench_name, "tda")
 
-            def run_baseline_once():
+            srcs_all = srcs + extra_srcs_from_common
+            use_cxx = args.cxx or any(pathlib.Path(s).suffix == ".cpp" for s in srcs_all)
+            
+            if use_cxx:
+                clang = clang + "++"
+
+            def run_baseline_once(clang):
                 t_opt, out, err, _ = do_opt(args.opt, linked_ll, base_passes, base_ll)
                 if log_fp and out:
                     log_fp.write(out)
@@ -216,7 +223,7 @@ def main():
                 must(rc == 0, f"error: baseline link failed for {bench_name}", err)
                 return t_opt
 
-            def run_tda_once():
+            def run_tda_once(clang):
                 t_opt, out, stats, _ = do_opt(args.opt, linked_ll, tda_passes, tda_ll, extra_args=tda_extra)
                 if log_fp and out:
                     log_fp.write(out)
@@ -229,10 +236,10 @@ def main():
 
             # Warmups (ignored timings)
             for _ in range(args.warmup):
-                run_baseline_once()
+                run_baseline_once(clang)
             last_tda_stats_raw = ""
             for _ in range(args.warmup):
-                _, stats = run_tda_once()
+                _, stats = run_tda_once(clang)
                 last_tda_stats_raw = stats  # keep any warmup stats just in case
 
             # Measured runs
@@ -240,11 +247,11 @@ def main():
             tda_opt_times  = []
 
             for _ in range(args.runs):
-                t_opt = run_baseline_once()
+                t_opt = run_baseline_once(clang)
                 base_opt_times.append(t_opt)
 
             for _ in range(args.runs):
-                t_opt, stats = run_tda_once()
+                t_opt, stats = run_tda_once(clang)
                 tda_opt_times.append(t_opt)
                 last_tda_stats_raw = stats  # keep last for parsing
 
@@ -291,6 +298,7 @@ def main():
     # Ensure all four known stat columns exist (fill 0 if missing)
     for desc in (DESC_PTD, DESC_TDP, DESC_PDP, DESC_NDP):
         if desc not in df_stats.columns:
+            print("not present", desc)
             df_stats[desc] = 0
 
     df_stats.columns.name = None
