@@ -10,27 +10,27 @@
 
 namespace tda {
 
+using TypeAliasSet = std::unordered_set<std::unique_ptr<TransparentType>>;
+
 class TypeDeductionAnalysis : public llvm::AnalysisInfoMixin<TypeDeductionAnalysis> {
   friend AnalysisInfoMixin;
   static llvm::AnalysisKey Key;
 
 public:
   struct Result {
-    llvm::DenseMap<llvm::Value*, std::unique_ptr<TransparentType>> transparentTypes;
+    llvm::DenseMap<llvm::Value*, TypeAliasSet> transparentTypes;
   };
 
   Result run(llvm::Module& m, llvm::ModuleAnalysisManager&);
 
 private:
-  using CandidateSet = std::unordered_set<std::unique_ptr<TransparentType>>;
-
   std::list<llvm::Value*> deductionQueue;
-  std::unordered_map<llvm::Value*, std::unique_ptr<TransparentType>> deducedTypes;
+  std::unordered_map<llvm::Value*, TypeAliasSet> deducedTypes;
   llvm::SmallPtrSet<llvm::Instruction*, 32> tbaaUsedForInstruction;
   bool changed = true;
 
-  const TransparentType* updateDeducedType(llvm::Value* value, std::unique_ptr<TransparentType> deducedType);
-  const TransparentType* getOrCreateDeducedType(llvm::Value* value);
+  const TypeAliasSet& updateDeducedTypes(llvm::Value* value, std::unique_ptr<TransparentType> deducedType);
+  TypeAliasSet getOrCreateDeducedTypes(llvm::Value* value);
 
   void deduceFromValue(llvm::Value* value);
 
@@ -41,6 +41,9 @@ private:
 
   void deduceFromCall(llvm::CallBase* call);
   void deduceFromFunction(llvm::Function* function);
+  void deduceFromSupportedIntrinsicCall(llvm::CallBase* call);
+
+  void mergeTypeAliasSets(llvm::Value* value1, llvm::Value* value2);
 
   void logDeducedTypes();
 };

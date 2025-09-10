@@ -8,6 +8,7 @@
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/ErrorHandling.h>
 
+#include <deque>
 #include <memory>
 #include <sstream>
 
@@ -28,245 +29,301 @@ bool containsPtrType(Type* type) {
   llvm_unreachable("Type not handled in containsPtrType");
 }
 
-std::unique_ptr<TransparentType> TransparentTypeFactory::create(const Value* value) {
+std::unique_ptr<TransparentType> TransparentTypeFactory::createFromValue(const Value* value) {
   assert(value && "Cannot create type of null value");
   assert(!isa<BasicBlock>(value) && "BasicBlock cannot have a transparent type");
   if (auto* function = dyn_cast<Function>(value))
-    return create(function->getReturnType(), 0);
+    return createFromType(function->getReturnType(), 0);
   if (auto* global = dyn_cast<GlobalValue>(value))
-    return create(global->getValueType(), 1);
-  return create(value->getType(), 0);
+    return createFromType(global->getValueType(), 1);
+  return createFromType(value->getType(), 0);
 }
 
-std::unique_ptr<TransparentType> TransparentTypeFactory::create(Type* unwrappedType, const unsigned indirections) {
+std::unique_ptr<TransparentType> TransparentTypeFactory::createFromType(Type* unwrappedType,
+                                                                        const unsigned indirections) {
+  std::unique_ptr<TransparentType> type = nullptr;
   if (auto* structType = dyn_cast_or_null<StructType>(unwrappedType))
-    return std::unique_ptr<TransparentType>(new TransparentStructType(structType, indirections));
-  if (auto* arrayType = dyn_cast_or_null<ArrayType>(unwrappedType))
-    return std::unique_ptr<TransparentType>(new TransparentArrayType(arrayType, indirections));
-  if (auto* vectorType = dyn_cast_or_null<VectorType>(unwrappedType))
-    return std::unique_ptr<TransparentType>(new TransparentArrayType(vectorType, indirections));
-  return std::unique_ptr<TransparentType>(new TransparentType(unwrappedType, indirections));
+    if (structType->hasName() && structType->getStructName().starts_with("union."))
+      type = std::unique_ptr<TransparentType>(new TransparentType(nullptr, true));
+    else
+      type = std::unique_ptr<TransparentType>(new TransparentStructType(structType));
+  else if (auto* arrayType = dyn_cast_or_null<ArrayType>(unwrappedType))
+    type = std::unique_ptr<TransparentType>(new TransparentArrayType(arrayType));
+  else if (auto* vectorType = dyn_cast_or_null<VectorType>(unwrappedType))
+    type = std::unique_ptr<TransparentType>(new TransparentArrayType(vectorType));
+  else if (auto* ptrType = dyn_cast_or_null<PointerType>(unwrappedType))
+    type = std::unique_ptr<TransparentType>(new TransparentPointerType(ptrType));
+  else
+    type = std::unique_ptr<TransparentType>(new TransparentType(unwrappedType));
+  return createFromExisting(type.get(), indirections);
+}
+
+std::unique_ptr<TransparentType> TransparentTypeFactory::createFromExisting(const TransparentType* unwrappedType,
+                                                                            unsigned indirections) {
+  if (indirections == 0)
+    return unwrappedType->clone();
+
+  Type* unwrappedLLVMType = unwrappedType->getLLVMType();
+  PointerType* ptrLLVMType = nullptr;
+  if (unwrappedLLVMType)
+    ptrLLVMType = PointerType::get(unwrappedLLVMType->getContext(), 0);
+
+  std::unique_ptr<TransparentType> type = unwrappedType->clone();
+  for (unsigned i = 0; i < indirections; i++)
+    type = std::unique_ptr<TransparentType>(new TransparentPointerType(ptrLLVMType, std::move(type)));
+  return type;
 }
 
 std::unique_ptr<TransparentType>
-TransparentTypeFactory::create(SmallVector<std::unique_ptr<TransparentType>>& fieldTypes,
-                               const SmallVector<unsigned>& fieldOffsets,
-                               const SmallVector<unsigned>& fieldSizes,
-                               const unsigned indirections) {
-  return std::unique_ptr<TransparentStructType>(
-    new TransparentStructType(fieldTypes, fieldOffsets, fieldSizes, indirections));
+TransparentTypeFactory::createFromFields(SmallVector<std::unique_ptr<TransparentType>>& fieldTypes,
+                                         const SmallVector<unsigned>& fieldOffsets,
+                                         const SmallVector<unsigned>& fieldSizes,
+                                         const unsigned indirections) {
+  std::unique_ptr<TransparentType> type =
+    std::unique_ptr<TransparentStructType>(new TransparentStructType(fieldTypes, fieldOffsets, fieldSizes));
+  return createFromExisting(type.get(), indirections);
 }
 
-std::unique_ptr<TransparentType> TransparentType::getPointedType() const {
-  if (isPlaceholder())
-    return nullptr;
-  assert(isPointerTy() && "Not a pointer type");
-  if (indirections == 0)
-    return nullptr;
-  std::unique_ptr<TransparentType> pointedType = clone();
-  pointedType->indirections--;
-  return pointedType;
+TransparentType* TransparentType::getPointedType() const {
+  assert(isPointerTT() && "Not a pointer type");
+  return nullptr;
 }
 
 std::unique_ptr<TransparentType> TransparentType::getPointerToType() const {
-  std::unique_ptr<TransparentType> pointedType = clone();
-  pointedType->indirections++;
-  return pointedType;
+  return TransparentTypeFactory::createFromExisting(this, 1);
 }
 
-const TransparentType* TransparentType::getIndexedType(Type* gepSrcElType,
-                                                       const iterator_range<const Use*> gepIndices) const {
-  if (isScalarTT())
-    // We can't know anything
+SmallPtrSet<Type*, 4> TransparentType::getContainedLLVMTypes() const {
+  if (llvmType)
+    return {llvmType};
+  return {};
+}
+
+std::unique_ptr<TransparentType> TransparentType::getIndexedType(Type* gepSrcElType,
+                                                                 const iterator_range<const Use*> gepIndices) const {
+  return getOrSetIndexedType(gepSrcElType, gepIndices);
+}
+
+std::unique_ptr<TransparentType> TransparentType::cloneAndSetIndexedType(
+  const TransparentType* setType, Type* gepSrcElType, const iterator_range<const Use*> gepIndices) const {
+  std::unique_ptr<TransparentType> result = clone();
+  result->getOrSetIndexedType(gepSrcElType, gepIndices, setType);
+  return result;
+}
+
+bool TransparentType::isEqual(const TransparentType* a, const TransparentType* b) {
+  if (a->isPlaceholder() || b->isPlaceholder())
+    return true;
+  if (a->isScalarTT() && b->isScalarTT())
+    return a->llvmType == b->llvmType;
+  if (a->isPointerTT() && b->isPointerTT())
+    return true;
+  if (a->isArrayTT() && b->isArrayTT()) {
+    const auto* arrayA = cast<TransparentArrayType>(a);
+    const auto* arrayB = cast<TransparentArrayType>(b);
+    return isEqual(arrayA->getElementType(), arrayB->getElementType());
+  }
+  if (a->isStructTT() && b->isStructTT()) {
+    const auto* structA = cast<TransparentStructType>(a);
+    const auto* structB = cast<TransparentStructType>(b);
+    if (structA->getNumFieldTypes() != structB->getNumFieldTypes())
+      return false;
+    for (auto&& [fieldA, fieldB] : zip(structA->getFieldTypes(), structB->getFieldTypes()))
+      if (!isEqual(fieldA, fieldB))
+        return false;
+    return true;
+  }
+  return false;
+}
+
+const TransparentType* TransparentType::findGepSrcElementType(const TransparentType* type) const {
+  const TransparentType* curr = this->getPointedType();
+  while (curr) {
+    if (isEqual(curr, type))
+      return curr;
+    if (curr->isArrayTT())
+      curr = cast<TransparentArrayType>(curr)->getElementType();
+    else if (curr->isStructTT())
+      curr = cast<TransparentStructType>(curr)->getFieldType(0);
+    else
+      curr = nullptr;
+  }
+  return curr;
+}
+
+std::unique_ptr<TransparentType> TransparentType::getOrSetIndexedType(Type* gepSrcElType,
+                                                                      const iterator_range<const Use*> gepIndices,
+                                                                      const TransparentType* setType) const {
+  std::list<const Value*> indices;
+  for (const Value* index : gepIndices)
+    indices.push_back(index);
+
+  const TransparentType* thisPointed = this->getPointedType();
+  if (!thisPointed)
     return nullptr;
-  const TransparentType* currType = this;
-  if ((isStructTT() && isa<StructType>(gepSrcElType))
-      || (isArrayTT() && (isa<ArrayType>(gepSrcElType) || isa<VectorType>(gepSrcElType)))) {
-    bool first = true;
-    for (const Value* indexValue : gepIndices) {
-      if (first) {
-        if (const auto* indexConstant = dyn_cast<ConstantInt>(indexValue))
-          if (indexConstant->getSExtValue() == 0) {
-            first = false;
-            continue;
-          }
-        // We don't really know which type we are looking at when the first index is not 0
-        return nullptr;
-      }
-      if (auto* structType = dyn_cast<TransparentStructType>(currType)) {
-        const unsigned fieldIndex = cast<ConstantInt>(indexValue)->getZExtValue();
-        currType = structType->getFieldType(fieldIndex);
-      }
-      else if (auto* arrayType = dyn_cast<TransparentArrayType>(currType)) {
-        // Any array index selects the element type
-        currType = arrayType->getElementType();
-      }
-      else if (currType->getUnwrappedLLVMType()->isPointerTy()) {
-        // We can't do more until we deduce this pointer type
-        return nullptr;
-      }
-      else
-        llvm_unreachable("Invalid gep instruction");
-    }
-    return currType;
-  }
-  if (const auto* thisArray = dyn_cast<TransparentArrayType>(this)) {
-    TransparentType* elementType = thisArray->getElementType();
-    if (elementType->getUnwrappedLLVMType() == gepSrcElType && indirections == 1)
-      return elementType;
-  }
-  if (gepSrcElType->getNumContainedTypes() == 0) {
-    const auto* indexConstant = dyn_cast<ConstantInt>(gepIndices.begin());
-    if (!indexConstant)
-      return nullptr;
-    const DataLayout* dataLayout = TypeDeductionAnalysisInfo::getInstance().getDataLayout();
-    long index = indexConstant->getSExtValue();
-    unsigned srcElTypeSize = dataLayout->getTypeAllocSize(gepSrcElType);
-    if (const auto* thisArray = dyn_cast<TransparentArrayType>(this)) {
-      TransparentType* elementType = thisArray->getElementType();
-      unsigned elementSize = dataLayout->getTypeAllocSize(elementType->toLLVMType());
-      if (unsigned numElements = thisArray->getNumElements()) {
-        unsigned totalArraySize = numElements * elementSize;
-        if (index < totalArraySize / srcElTypeSize && // In bounds
-            index * srcElTypeSize % elementSize == 0) // Not mid-element
-          return elementType;
-      }
-      return nullptr;
-    }
-    llvm_unreachable("Implement me");
-  }
-  llvm_unreachable("Gep case not handled");
+
+  std::unique_ptr<TransparentType> gepSrcElArrayType =
+    TransparentTypeFactory::createFromType(ArrayType::get(gepSrcElType, 0), 0);
+
+  const TransparentType* startingPoint = nullptr;
+  if (gepSrcElType->getNumContainedTypes() == 0 || thisPointed->isScalarTT())
+    startingPoint = thisPointed;
+  else
+    startingPoint = findGepSrcElementType(cast<TransparentArrayType>(gepSrcElArrayType.get())->getElementType());
+  if (!startingPoint)
+    return nullptr;
+
+  const auto startingPointArray = std::make_unique<TransparentArrayType>();
+  startingPointArray->setElementType(startingPoint->clone());
+
+  TransparentType* indexedType =
+    getOrSetIndexedType(startingPointArray.get(), gepSrcElArrayType.get(), indices, setType);
+  return setType || !indexedType ? nullptr : indexedType->clone();
 }
 
-TransparentType* TransparentType::setIndexedType(const TransparentType* fieldType,
-                                                 Type* gepSrcElType,
-                                                 const iterator_range<const Use*> gepIndices) {
-  if (isScalarTT())
-    // We can't know anything
-    return this;
-  unsigned numIndices = gepIndices.end() - gepIndices.begin();
-  TransparentType* currType = this;
-  if ((isStructTT() && isa<StructType>(gepSrcElType))
-      || (isArrayTT() && (isa<ArrayType>(gepSrcElType) || isa<VectorType>(gepSrcElType)))) {
-    unsigned indexCount = 0;
-    bool isLastIndex = false;
-    bool first = true;
-    for (Value* indexValue : gepIndices) {
-      indexCount++;
-      isLastIndex = (indexCount == numIndices);
-      if (first) {
-        if (const auto* indexConstant = dyn_cast<ConstantInt>(indexValue))
-          if (indexConstant->getSExtValue() == 0) {
-            first = false;
-            continue;
+TransparentType* TransparentType::getOrSetIndexedType(TransparentType* ptrOperandType,
+                                                      const TransparentType* gepSrcElType,
+                                                      std::list<const Value*>& gepIndices,
+                                                      const TransparentType* setType) const {
+  const Value* indexValue = gepIndices.front();
+  gepIndices.pop_front();
+
+  if (gepSrcElType->isArrayTT() && ptrOperandType->isArrayTT()) {
+    // Both array
+    TransparentType* ptrOpElementType = cast<TransparentArrayType>(ptrOperandType)->getElementType();
+    TransparentType* gepSrcElElementType = cast<TransparentArrayType>(gepSrcElType)->getElementType();
+
+    if (gepSrcElElementType->isScalarTT()) {
+      assert(gepIndices.empty());
+
+      if (ptrOpElementType->isScalarTT() || ptrOpElementType->isPointerTT()) {
+        if (setType)
+          cast<TransparentArrayType>(ptrOperandType)->setElementType(setType->clone());
+        return ptrOpElementType;
+      }
+
+      if (ptrOpElementType->isArrayTT()) {
+        if (setType)
+          cast<TransparentArrayType>(ptrOpElementType)->setElementType(setType->clone());
+        return cast<TransparentArrayType>(ptrOpElementType)->getElementType();
+      }
+
+      if (ptrOpElementType->isStructTT()) {
+        const DataLayout* dataLayout = TypeDeductionAnalysisInfo::getInstance().getDataLayout();
+        const auto* indexConst = dyn_cast<ConstantInt>(indexValue);
+        if (!indexConst)
+          return nullptr;
+        unsigned index = indexConst->getZExtValue();
+        auto* currStruct = cast<TransparentStructType>(ptrOpElementType);
+
+        while (currStruct) {
+          const StructLayout* structLayout = nullptr;
+          if (Type* currStructLLVMType = currStruct->getLLVMType())
+            structLayout = dataLayout->getStructLayout(cast<StructType>(currStructLLVMType));
+          unsigned numFields = currStruct->getNumFieldTypes();
+          for (unsigned i = 0; i < numFields; i++) {
+            TransparentType* fieldType = currStruct->getFieldType(i);
+            unsigned fieldOffset = structLayout ? structLayout->getElementOffset(i) : currStruct->getFieldOffset(i);
+            unsigned nextFieldOffset = 0;
+            if (i + 1 < numFields)
+              nextFieldOffset =
+                structLayout ? structLayout->getElementOffset(i + 1) : currStruct->getFieldOffset(i + 1);
+
+            if (nextFieldOffset == 0 || (index >= fieldOffset && index < nextFieldOffset)) {
+              if (index == fieldOffset) {
+                if (setType)
+                  currStruct->setFieldType(i, setType->clone());
+                return fieldType;
+              }
+              if (currStruct->isArrayTT()) {
+                if (setType)
+                  cast<TransparentArrayType>(fieldType)->setElementType(setType->clone());
+                return cast<TransparentArrayType>(fieldType)->getElementType();
+              }
+              currStruct = dyn_cast<TransparentStructType>(fieldType);
+              break;
+            }
           }
-        // We don't really know which type we are looking at when the first index is not 0
-        return this;
-      }
-      if (auto structType = dyn_cast<TransparentStructType>(currType)) {
-        unsigned fieldIndex = cast<ConstantInt>(indexValue)->getZExtValue();
-        if (isLastIndex)
-          structType->setFieldType(fieldIndex, fieldType->clone());
-        else
-          currType = structType->getFieldType(fieldIndex);
-      }
-      else if (auto arrayType = dyn_cast<TransparentArrayType>(currType)) {
-        // Any array index selects the element type
-        if (isLastIndex)
-          arrayType->setElementType(fieldType->clone());
-        else
-          currType = arrayType->getElementType();
-      }
-      else if (currType->getUnwrappedLLVMType()->isPointerTy()) {
-        // We can't do more until we deduce this pointer type
-        return this;
-      }
-      else
-        llvm_unreachable("Invalid gep instruction");
-    }
-    return this;
-  }
-  if (const auto* thisArray = dyn_cast<TransparentArrayType>(this)) {
-    TransparentType* elementType = thisArray->getElementType();
-    if (elementType->getUnwrappedLLVMType() == gepSrcElType && indirections == 1)
-      return this;
-  }
-  if (gepSrcElType->getNumContainedTypes() == 0) {
-    const auto* indexConstant = dyn_cast<ConstantInt>(gepIndices.begin());
-    if (!indexConstant)
-      return this;
-    const DataLayout* dataLayout = TypeDeductionAnalysisInfo::getInstance().getDataLayout();
-    long index = indexConstant->getSExtValue();
-    unsigned srcElTypeSize = dataLayout->getTypeAllocSize(gepSrcElType);
-    if (auto* thisArray = dyn_cast<TransparentArrayType>(this)) {
-      TransparentType* elementType = thisArray->getElementType();
-      unsigned elementSize = dataLayout->getTypeAllocSize(elementType->toLLVMType());
-      if (unsigned numElements = thisArray->getNumElements()) {
-        unsigned totalArraySize = numElements * elementSize;
-        if (index < totalArraySize / srcElTypeSize && // In bounds
-            index * srcElTypeSize % elementSize == 0) // Not mid-element
-        {
-          thisArray->setElementType(fieldType->clone());
-          return this;
         }
+        return nullptr;
       }
-      return this;
+
+      llvm_unreachable("wtf");
     }
+
+    if (gepIndices.empty()) {
+      if (setType)
+        cast<TransparentArrayType>(ptrOperandType)->setElementType(setType->clone());
+      return ptrOpElementType;
+    }
+
+    return getOrSetIndexedType(ptrOpElementType, gepSrcElElementType, gepIndices, setType);
   }
-  llvm_unreachable("Gep case not handled");
-}
 
-int TransparentType::compare(const TransparentType& other) const {
-  if (*this == other)
-    return 0;
+  if (ptrOperandType->isArrayTT()) {
+    // gepSrcElType not array and ptrOperandType array
+    if (gepIndices.empty()) {
+      if (setType)
+        cast<TransparentArrayType>(ptrOperandType)->setElementType(setType->clone());
+      return cast<TransparentArrayType>(ptrOperandType)->getElementType();
+    }
+    llvm_unreachable("wtf");
+  }
 
-  bool thisOpaque = isOpaque();
-  bool otherOpaque = other.isOpaque();
-  if (thisOpaque && !otherOpaque)
-    return -1;
-  if (!thisOpaque && otherOpaque)
-    return 1;
+  if (gepSrcElType->isArrayTT() && ptrOperandType->isScalarTT())
+    return nullptr;
 
-  if (indirections < other.indirections)
-    return -1;
-  if (indirections > other.indirections)
-    return 1;
+  if (gepSrcElType->isStructTT() && ptrOperandType->isStructTT()) {
+    // Both structs
+    unsigned index = cast<ConstantInt>(indexValue)->getZExtValue();
+    TransparentType* ptrOpFieldType = cast<TransparentStructType>(ptrOperandType)->getFieldType(index);
+    TransparentType* gepSrcElFieldType = cast<TransparentStructType>(gepSrcElType)->getFieldType(index);
 
-  return 0;
-}
+    if (gepIndices.empty()) {
+      if (setType)
+        cast<TransparentStructType>(ptrOperandType)->setFieldType(index, setType->clone());
+      return ptrOpFieldType;
+    }
 
-Type* TransparentType::toLLVMType() const {
-  if (indirections > 0)
-    return PointerType::get(unwrappedType->getContext(), 0);
-  return unwrappedType;
+    return getOrSetIndexedType(ptrOpFieldType, gepSrcElFieldType, gepIndices, setType);
+  }
+
+  if (gepSrcElType->isStructTT()) {
+    // gepSrcElType struct and ptrOperandType not struct
+    // This means that also ptrOperandType is a struct, but we still need to deduce it (or this is simply an alias)
+    return nullptr;
+  }
+
+  llvm_unreachable("wtf");
 }
 
 bool TransparentType::operator==(const TransparentType& other) const {
-  return getKind() == other.getKind() && unwrappedType == other.unwrappedType && indirections == other.indirections;
+  return getKind() == other.getKind() && llvmType == other.llvmType;
 }
 
 bool TransparentType::isCompatibleWith(const TransparentType* other) const {
   if (!other)
     return true;
-  if (isPlaceholder() || other->isPlaceholder())
+  if (isPlaceholder() || other->isPlaceholder() || isUnion() || other->isUnion())
     return true;
-  bool isPointer = isPointerTy();
-  bool isOtherPointer = other->isPointerTy();
+
+  bool isPointer = isPointerTT();
+  bool isOtherPointer = other->isPointerTT();
   if (isPointer || isOtherPointer) {
     if (!(isPointer && isOtherPointer))
       return false;
-    if (isOpaque() || other->isOpaque())
+    if (containsOpaquePtr() || other->containsOpaquePtr())
       return true;
-    const std::unique_ptr<TransparentType> pointedType = getPointedType();
-    const std::unique_ptr<TransparentType> otherPointedType = other->getPointedType();
-    return pointedType->isCompatibleWith(otherPointedType.get());
+    const TransparentType* pointedType = getPointedType();
+    const TransparentType* otherPointedType = other->getPointedType();
+    return pointedType->isCompatibleWith(otherPointedType);
   }
   if (const auto* otherArray = dyn_cast<TransparentArrayType>(other))
     return otherArray->getElementType()->isCompatibleWith(this);
   if (isScalarTT()) {
     if (!other->isScalarTT())
       return false;
-    return getFullyUnwrappedLLVMType() == other->getFullyUnwrappedLLVMType();
+    return llvmType == other->llvmType;
   }
   return getKind() == other->getKind();
 }
@@ -274,16 +331,17 @@ bool TransparentType::isCompatibleWith(const TransparentType* other) const {
 std::unique_ptr<TransparentType> TransparentType::mergeWith(const TransparentType* other) const {
   if (!other || other->isPlaceholder())
     return clone();
-  if (isPlaceholder())
+  if (isPlaceholder() || other->isUnion())
     return other->clone();
+
   assert(isCompatibleWith(other) && "mergeWith on incompatible types");
-  if (isPointerTy() || other->isPointerTy()) {
-    const bool opaque = isOpaque();
-    const bool otherOpaque = other->isOpaque();
+  if (isPointerTT() && other->isPointerTT()) {
+    const bool opaque = containsOpaquePtr();
+    const bool otherOpaque = other->containsOpaquePtr();
     if (!opaque && !otherOpaque) {
-      const std::unique_ptr<TransparentType> pointedType = getPointedType();
-      const std::unique_ptr<TransparentType> otherPointedType = other->getPointedType();
-      const std::unique_ptr<TransparentType> mergedPointedType = pointedType->mergeWith(otherPointedType.get());
+      const TransparentType* pointedType = getPointedType();
+      const TransparentType* otherPointedType = other->getPointedType();
+      const std::unique_ptr<TransparentType> mergedPointedType = pointedType->mergeWith(otherPointedType);
       return mergedPointedType->getPointerToType();
     }
     if (!otherOpaque)
@@ -302,51 +360,102 @@ std::unique_ptr<TransparentType> TransparentType::clone() const {
 }
 
 std::string TransparentType::toString() const {
+  if (isUnion())
+    return "U";
   if (isPlaceholder())
     return "_";
-  return tda::toString(unwrappedType) + std::string(indirections, '*');
+  return tda::toString(llvmType);
 }
 
-void TransparentType::incrementIndirections(int increment) {
-  if (increment < 0)
-    assert(-increment <= static_cast<int>(indirections) && "Indirections underflow");
-  else
-    assert(indirections <= UINT_MAX - increment && "Indirections overflow");
-  indirections += increment;
-}
-
-bool TransparentArrayType::isOpaque() const {
-  if (TransparentType::isOpaque())
-    return true;
-  return elementType->isOpaque();
-}
-
-int TransparentArrayType::compare(const TransparentType& other) const {
-  // assert(!isa<TransparentStructType>(other) && "Array and struct cannot be compared");
-  if (!isa<TransparentArrayType>(other)) {
-    // If an array is compared to a scalar or a ptr return myself because at least we know that we are an array
-    return 1;
+SmallPtrSet<Type*, 4> TransparentPointerType::getContainedLLVMTypes() const {
+  SmallPtrSet<Type*, 4> containedTypes = TransparentType::getContainedLLVMTypes();
+  if (pointedType) {
+    SmallPtrSet<Type*, 4> pointedContainedTypes = pointedType->getContainedLLVMTypes();
+    containedTypes.insert(pointedContainedTypes.begin(), pointedContainedTypes.end());
   }
-  const auto& otherArray = cast<TransparentArrayType>(other);
-  int cmp = TransparentType::compare(other);
-  if (cmp != 0)
-    return cmp;
-  return elementType->compare(*otherArray.elementType);
+  return containedTypes;
+}
+
+bool TransparentPointerType::containsFloatingPointType() const {
+  return pointedType && pointedType->containsFloatingPointType();
+}
+
+bool TransparentPointerType::operator==(const TransparentType& other) const {
+  if (this == &other)
+    return true;
+  if (getKind() != other.getKind())
+    return false;
+  const auto& o = cast<TransparentPointerType>(other);
+  if (!pointedType && !o.pointedType)
+    return true;
+  if (!pointedType || !o.pointedType)
+    return false;
+  return *pointedType == *o.pointedType;
+}
+
+bool TransparentPointerType::isCompatibleWith(const TransparentType* other) const {
+  if (!other || other->isPlaceholder() || other->isUnion())
+    return true;
+
+  if (!other->isPointerTT())
+    return false;
+  if (isOpaquePtr() || other->isOpaquePtr() || isByteTyOrPtrTo() || other->isByteTyOrPtrTo())
+    return true;
+  const TransparentType* pointedType = getPointedType();
+  const TransparentType* otherPointedType = other->getPointedType();
+  return pointedType && otherPointedType ? pointedType->isCompatibleWith(otherPointedType) : true;
+}
+
+std::unique_ptr<TransparentType> TransparentPointerType::mergeWith(const TransparentType* other) const {
+  if (!other || other->isPlaceholder())
+    return clone();
+  if (other->isUnion())
+    return other->clone();
+  if (isByteTyOrPtrTo() && other->isByteTyOrPtrTo())
+    return clone();
+
+  const auto* otherPtr = cast<TransparentPointerType>(other);
+  if ((!pointedType || isByteTyOrPtrTo()) && otherPtr->pointedType)
+    return other->clone();
+  if (pointedType && (!otherPtr->pointedType || otherPtr->isByteTyOrPtrTo()))
+    return clone();
+  if (!pointedType && !otherPtr->pointedType)
+    return clone();
+  std::unique_ptr<TransparentType> mergedPointed = pointedType->mergeWith(otherPtr->pointedType.get());
+  return TransparentTypeFactory::createFromExisting(mergedPointed.get(), 1);
+}
+
+std::unique_ptr<TransparentType> TransparentPointerType::clone() const {
+  return std::unique_ptr<TransparentType>(new TransparentPointerType(*this));
+}
+
+std::string TransparentPointerType::toString() const {
+  if (!pointedType)
+    return "ptr";
+  return pointedType->toString() + "*";
+}
+
+bool TransparentArrayType::containsOpaquePtr() const {
+  if (TransparentType::containsOpaquePtr())
+    return true;
+  return elementType->containsOpaquePtr();
 }
 
 SmallPtrSet<Type*, 4> TransparentArrayType::getContainedLLVMTypes() const {
   SmallPtrSet<Type*, 4> containedTypes = TransparentType::getContainedLLVMTypes();
-  SmallPtrSet<Type*, 4> elementContaineTypes = getElementType()->getContainedLLVMTypes();
-  containedTypes.insert(elementContaineTypes.begin(), elementContaineTypes.end());
+  if (elementType) {
+    SmallPtrSet<Type*, 4> elementContainedTypes = elementType->getContainedLLVMTypes();
+    containedTypes.insert(elementContainedTypes.begin(), elementContainedTypes.end());
+  }
   return containedTypes;
 }
 
 unsigned TransparentArrayType::getNumElements() const {
-  if (!unwrappedType)
+  if (!llvmType)
     return 0;
-  if (isa<ArrayType>(unwrappedType))
-    return unwrappedType->getArrayNumElements();
-  if (auto* vectorType = dyn_cast<VectorType>(unwrappedType))
+  if (isa<ArrayType>(llvmType))
+    return llvmType->getArrayNumElements();
+  if (auto* vectorType = dyn_cast<VectorType>(llvmType))
     return vectorType->getElementCount().getKnownMinValue();
   return 0;
 }
@@ -369,10 +478,9 @@ bool TransparentArrayType::operator==(const TransparentType& other) const {
 }
 
 bool TransparentArrayType::isCompatibleWith(const TransparentType* other) const {
-  if (!other)
+  if (!other || other->isUnion())
     return true;
-  if (isPointerTy() || other->isPointerTy())
-    return TransparentType::isCompatibleWith(other);
+
   if (const auto* otherArray = dyn_cast<TransparentArrayType>(other)) {
     // TODO check lengths
     return getElementType()->isCompatibleWith(otherArray->getElementType());
@@ -383,8 +491,9 @@ bool TransparentArrayType::isCompatibleWith(const TransparentType* other) const 
 std::unique_ptr<TransparentType> TransparentArrayType::mergeWith(const TransparentType* other) const {
   if (!other)
     return clone();
-  if (isPointerTy() || other->isPointerTy())
-    return TransparentType::mergeWith(other);
+  if (other->isUnion())
+    return other->clone();
+
   std::unique_ptr<TransparentType> result = clone();
   std::unique_ptr<TransparentType> mergedElem;
   if (const auto* otherArray = dyn_cast<TransparentArrayType>(other))
@@ -403,23 +512,22 @@ std::string TransparentArrayType::toString() const {
   if (!elementType)
     return "InvalidType";
   std::stringstream ss;
-  if (!unwrappedType)
+  if (!llvmType)
     ss << "[" << *elementType << "]";
-  else if (isa<ArrayType>(unwrappedType))
-    ss << "[" << unwrappedType->getArrayNumElements() << " x " << *elementType << "]";
-  else if (auto* vectorType = dyn_cast<VectorType>(unwrappedType)) {
+  else if (isa<ArrayType>(llvmType))
+    ss << "[" << llvmType->getArrayNumElements() << " x " << *elementType << "]";
+  else if (auto* vectorType = dyn_cast<VectorType>(llvmType)) {
     ElementCount elementCount = vectorType->getElementCount();
     ss << "<";
     if (elementCount.isScalable())
       ss << "vscale x ";
     ss << elementCount.getKnownMinValue() << " x " << *elementType << ">";
   }
-  ss << std::string(indirections, '*');
   return ss.str();
 }
 
-TransparentStructType::TransparentStructType(StructType* unwrappedType, const unsigned indirections)
-: TransparentType(unwrappedType, indirections) {
+TransparentStructType::TransparentStructType(StructType* unwrappedType)
+: TransparentType(unwrappedType) {
   auto& passInfo = TypeDeductionAnalysisInfo::getInstance();
   const DataLayout* dataLayout = passInfo.getDataLayout();
   const StructLayout* structLayout = dataLayout ? dataLayout->getStructLayout(unwrappedType) : nullptr;
@@ -433,27 +541,25 @@ TransparentStructType::TransparentStructType(StructType* unwrappedType, const un
     if (isPadding)
       paddingFields.insert(i);
     Type* fieldType = unwrappedType->getElementType(i);
-    fieldTypes.push_back(TransparentTypeFactory::create(fieldType, 0));
+    fieldTypes.push_back(TransparentTypeFactory::createFromType(fieldType, 0));
   }
 }
 
 TransparentStructType::TransparentStructType(SmallVector<std::unique_ptr<TransparentType>>& fieldTypes,
                                              const SmallVector<unsigned>& fieldOffsets,
-                                             const SmallVector<unsigned>& fieldSizes,
-                                             const unsigned indirections) {
+                                             const SmallVector<unsigned>& fieldSizes) {
   for (auto& fieldType : fieldTypes)
     this->fieldTypes.push_back(std::move(fieldType));
   for (const auto& fieldOffset : fieldOffsets)
     this->fieldOffsets.push_back(fieldOffset);
   // TODO use sizes to compute which fields are padding
-  this->indirections = indirections;
 }
 
-bool TransparentStructType::isOpaque() const {
-  if (TransparentType::isOpaque())
+bool TransparentStructType::containsOpaquePtr() const {
+  if (TransparentType::containsOpaquePtr())
     return true;
   for (const std::unique_ptr<TransparentType>& field : fieldTypes)
-    if (!field || field->isOpaque())
+    if (!field || field->containsOpaquePtr())
       return true;
   return false;
 }
@@ -463,31 +569,6 @@ bool TransparentStructType::containsFloatingPointType() const {
     if (fieldType->containsFloatingPointType())
       return true;
   return false;
-}
-
-int TransparentStructType::compare(const TransparentType& other) const {
-  if (!isa<TransparentStructType>(other)) {
-    // assert(other.isOpaquePointer() || other.isByteTyOrPtrTo());
-    return 1;
-  }
-  const auto& otherStruct = cast<TransparentStructType>(other);
-  assert(getNumFieldTypes() == otherStruct.getNumFieldTypes());
-
-  int baseCmp = TransparentType::compare(other);
-  if (baseCmp != 0)
-    return baseCmp;
-
-  int overallResult = 0;
-  for (unsigned i = 0; i < fieldTypes.size(); i++) {
-    int cmp = fieldTypes[i]->compare(*otherStruct.fieldTypes[i]);
-    if (cmp == 0)
-      continue;
-    if (overallResult == 0)
-      overallResult = cmp;
-    else if ((overallResult > 0 && cmp < 0) || (overallResult < 0 && cmp > 0))
-      return 0; // Conflicting fields' comparisons result in equal transparency
-  }
-  return overallResult;
 }
 
 SmallPtrSet<Type*, 4> TransparentStructType::getContainedLLVMTypes() const {
@@ -519,10 +600,9 @@ bool TransparentStructType::operator==(const TransparentType& other) const {
 }
 
 bool TransparentStructType::isCompatibleWith(const TransparentType* other) const {
-  if (!other)
+  if (!other || other->isUnion())
     return true;
-  if (isPointerTy() || other->isPointerTy())
-    return TransparentType::isCompatibleWith(other);
+
   if (const auto* otherArray = dyn_cast<TransparentArrayType>(other))
     return otherArray->getElementType()->isCompatibleWith(this);
   if (const auto* otherStruct = dyn_cast<TransparentStructType>(other)) {
@@ -539,19 +619,34 @@ bool TransparentStructType::isCompatibleWith(const TransparentType* other) const
 std::unique_ptr<TransparentType> TransparentStructType::mergeWith(const TransparentType* other) const {
   if (!other)
     return clone();
-  if (isPointerTy() || other->isPointerTy())
-    return TransparentType::mergeWith(other);
+  if (other->isUnion())
+    return other->clone();
+
   if (const auto* otherArray = dyn_cast<TransparentArrayType>(other))
-    return otherArray->mergeWith(this);
+    return mergeWith(otherArray->getElementType());
+
   const auto otherStruct = cast<TransparentStructType>(other);
   auto result = clone();
   auto* resultStruct = cast<TransparentStructType>(result.get());
-  for (unsigned i = 0, n = getNumFieldTypes(); i < n; ++i) {
-    auto merged = getFieldType(i)->mergeWith(otherStruct->getFieldType(i));
-    resultStruct->setFieldType(i, std::move(merged));
+
+  for (unsigned i = 0; i < fieldTypes.size(); i++) {
+    std::unique_ptr<TransparentType> mergedField = getFieldType(i)->mergeWith(otherStruct->getFieldType(i));
+    resultStruct->setFieldType(i, std::move(mergedField));
+
     if (isFieldPadding(i) || otherStruct->isFieldPadding(i))
       resultStruct->addFieldPadding(i);
   }
+
+  Type* otherLLVMType = otherStruct->llvmType;
+  if (llvmType || otherLLVMType) {
+    if (llvmType && otherLLVMType)
+      assert(llvmType == otherLLVMType);
+    if (llvmType)
+      resultStruct->setLLVMType(llvmType);
+    else
+      resultStruct->setLLVMType(otherLLVMType);
+  }
+
   return result;
 }
 
@@ -563,7 +658,7 @@ std::string TransparentStructType::toString() const {
   if (std::ranges::any_of(fieldTypes, [](const auto& field) -> bool { return field == nullptr; }))
     return "InvalidType";
 
-  std::string typeString = unwrappedType ? tda::toString(unwrappedType) : "{}";
+  std::string typeString = llvmType ? tda::toString(llvmType) : "{}";
   std::stringstream ss;
   ss << typeString.substr(0, typeString.find('{') + 1) << " ";
 
@@ -580,8 +675,7 @@ std::string TransparentStructType::toString() const {
   }
 
   ss << " }";
-  if (unwrappedType && cast<StructType>(unwrappedType)->isPacked())
+  if (llvmType && cast<StructType>(llvmType)->isPacked())
     ss << ">";
-  ss << std::string(indirections, '*');
   return ss.str();
 }

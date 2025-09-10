@@ -8,16 +8,20 @@ import pandas as pd
 STAT_RE = re.compile(r"^\s*(\d+)\s+([A-Za-z0-9_.\-:]+)\s+-\s+(.*)$")
 
 # Canonical stat descriptions emitted by the TDA pass
-DESC_PTD = "Total pointer types to deduce"
-DESC_TDP = "Transparent pointers deduced"
-DESC_PDP = "Partially transparent pointers deduced"
-DESC_NDP = "Opaque pointers (not deduced)"
+DESC_1 = "Total pointer types to deduce"
+DESC_2 = "Total pointer alias types deduced"
+DESC_3 = "Pointers with multiple aliases"
+DESC_4 = "Transparent pointer aliases"
+DESC_5 = "Partially transparent pointer aliases"
+DESC_6 = "Opaque aliases (not deduced)"
 
 # Abbreviations requested
-ABBR_PTD = "Total ptr types"
-ABBR_TDP = "Transparent"
-ABBR_PDP = "Partially transparent"
-ABBR_NDP = "Opaque"
+ABBR_1 = "Total ptr types"
+ABBR_2 = "Total aliases"
+ABBR_3 = "Many aliases ptrs"
+ABBR_4 = "Transparent"
+ABBR_5 = "Partially transparent"
+ABBR_6 = "Opaque"
 
 def run(cmd):
     t0 = time.perf_counter()
@@ -25,10 +29,12 @@ def run(cmd):
     t1 = time.perf_counter()
     return p.returncode, t1 - t0, p.stdout, p.stderr
 
+
 def must(ok, msg, err=""):
     if ok: return
     sys.stderr.write(msg + ("\n" + err if err else "") + "\n")
     sys.exit(1)
+
 
 def parse_common_args(common_args: str):
     """
@@ -46,6 +52,7 @@ def parse_common_args(common_args: str):
                 comp_flags.append(tok)
     return comp_flags, link_flags, extra_srcs
 
+
 def emit_ll(clang_base, srcs, outdir, add_flags, add_include_dir=None):
     lls = []
     os.makedirs(outdir, exist_ok=True)
@@ -56,13 +63,14 @@ def emit_ll(clang_base, srcs, outdir, add_flags, add_include_dir=None):
             clang = clang_base + "++"
 
         ll = os.path.join(outdir, pathlib.Path(s).stem + ".ll")
-        cmd = [clang, "-O0", "-S", "-emit-llvm", "-c", s, "-o", ll, *add_flags]
+        cmd = [clang, "-S", "-emit-llvm", "-Xclang", "-new-struct-path-tbaa", "-c", s, "-o", ll, *add_flags]
         if add_include_dir:
             cmd += [f"-I{add_include_dir}"]
         rc, _, _, err = run(cmd)
         must(rc == 0, f"error: emit-llvm (.ll) failed for {s}", err)
         lls.append(ll)
     return lls
+
 
 def link_ll(llvm_link, lls, out_ll):
     os.makedirs(os.path.dirname(out_ll), exist_ok=True)
@@ -75,11 +83,13 @@ def link_ll(llvm_link, lls, out_ll):
     must(rc == 0, "error: llvm-link failed", err)
     return out_ll
 
+
 def do_opt(opt, in_ll, passes, out_ll, extra_args=()):
     cmd = [opt, f"-passes={passes}", in_ll, "-o", out_ll, "-S", "-stats", *extra_args]
     rc, t, out, err = run(cmd)
     must(rc == 0, f"error: opt failed ({passes})", err)
     return t, out, err, " ".join(cmd)
+
 
 def filter_stats_only_pass(stats_text, pass_name):
     lines = []
@@ -92,9 +102,11 @@ def filter_stats_only_pass(stats_text, pass_name):
             lines.append((int(count), pname, desc))
     return lines
 
+
 def find_bench_dirs(tests_dir: pathlib.Path, only_list):
     """Benchmark dir is a folder with <dir>/<dir>.c|.cpp."""
     ignore_dir = tests_dir / ".ignore"
+
     def is_valid_dir(p: pathlib.Path):
         if not p.is_dir(): return False
         if ignore_dir in p.parents or p == ignore_dir: return False
@@ -112,6 +124,7 @@ def find_bench_dirs(tests_dir: pathlib.Path, only_list):
     else:
         return sorted([p for p in tests_dir.rglob('*') if is_valid_dir(p)])
 
+
 def discover_sources(bench_dir: pathlib.Path):
     base = bench_dir.name
     cand_c = bench_dir / f"{base}.c"
@@ -121,17 +134,21 @@ def discover_sources(bench_dir: pathlib.Path):
     # fallback: all .c/.cpp directly inside the dir
     return [str(q.resolve()) for q in bench_dir.iterdir() if q.is_file() and q.suffix in (".c", ".cpp")]
 
+
 def derive_output_name(tmpdir, bench_name, kind):
     # place binaries and intermediates inside per-bench temp dir (persistent)
     return os.path.join(tmpdir, f"{bench_name}.{kind}.out")
+
 
 def main():
     ap = argparse.ArgumentParser(
         description="Run baseline O3 vs TDA+O3; collect TDA stats; save wide CSV (bench x stats). Timing considers ONLY opt (compile) time; link time is ignored."
     )
-    ap.add_argument("-tests-dir", required=True, help="Root dir containing benchmark folders (each with <dir>/<dir>.c|.cpp)")
+    ap.add_argument("-tests-dir", required=True,
+                    help="Root dir containing benchmark folders (each with <dir>/<dir>.c|.cpp)")
     ap.add_argument("-only", help="Comma-separated list of benchmark names to include")
-    ap.add_argument("-common-args", default="", help="Extra compile flags/files (includes/defines or helper .c/.cpp files)")
+    ap.add_argument("-common-args", default="",
+                    help="Extra compile flags/files (includes/defines or helper .c/.cpp files)")
     ap.add_argument("--clang", default="clang")
     ap.add_argument("--opt", default="opt")
     ap.add_argument("--llvm-link", default="llvm-link")
@@ -141,7 +158,8 @@ def main():
     ap.add_argument("-n", "--runs", type=int, default=5, help="Measured runs per pipeline (average over these)")
     ap.add_argument("-w", "--warmup", type=int, default=1, help="Warmup runs per pipeline (discard timings)")
     ap.add_argument("--csv", default=None, help="(ignored) legacy CSV path")
-    ap.add_argument("-debug", action="store_true", help="Pass --debug-only=tda to opt and save opt stdout to <bench>/bench.log")
+    ap.add_argument("-debug", action="store_true",
+                    help="Pass --debug-only=tda to opt and save opt stdout to <bench>/bench.log")
     args = ap.parse_args()
 
     tests_dir = pathlib.Path(args.tests_dir).resolve()
@@ -153,7 +171,7 @@ def main():
     comp_flags, link_flags, extra_srcs_from_common = parse_common_args(args.common_args)
 
     raw_rows = []  # dicts: {"bench","description","count"}
-    timing = {}    # bench -> {"abs_time": float, "rel_pct": float}
+    timing = {}  # bench -> {"abs_time": float, "rel_pct": float}
 
     for bench_dir in benches:
         bench_name = bench_dir.name
@@ -195,20 +213,20 @@ def main():
             linked_ll = link_ll(args.llvm_link, lls, os.path.join(tmp, "linked.ll"))
 
             base_ll = os.path.join(tmp, "base.ll")
-            tda_ll  = os.path.join(tmp, "tda.ll")
+            tda_ll = os.path.join(tmp, "tda.ll")
 
             base_passes = "default<O3>"
-            tda_passes  = f"{args.tda_pass_name},default<O3>"
-            tda_extra   = [f"-load-pass-plugin={args.tda_plugin}"]
+            tda_passes = f"{args.tda_pass_name},default<O3>"
+            tda_extra = [f"-load-pass-plugin={args.tda_plugin}"]
             if args.debug:
                 tda_extra.append("--debug-only=tda")
 
             bench_base = derive_output_name(tmp, bench_name, "base")
-            bench_out  = derive_output_name(tmp, bench_name, "tda")
+            bench_out = derive_output_name(tmp, bench_name, "tda")
 
             srcs_all = srcs + extra_srcs_from_common
             use_cxx = args.cxx or any(pathlib.Path(s).suffix == ".cpp" for s in srcs_all)
-            
+
             if use_cxx:
                 clang = clang + "++"
 
@@ -219,7 +237,7 @@ def main():
                     log_fp.write(err)
                     log_fp.write("\n")
                     log_fp.flush()
-                rc, _, _, err = run([clang, "-O0", base_ll, "-o", bench_base, *link_flags])
+                rc, _, _, err = run([clang, base_ll, "-o", bench_base, *link_flags])
                 must(rc == 0, f"error: baseline link failed for {bench_name}", err)
                 return t_opt
 
@@ -230,7 +248,7 @@ def main():
                     log_fp.write(stats)
                     log_fp.write("\n")
                     log_fp.flush()
-                rc, _, _, err = run([clang, "-O0", tda_ll, "-o", bench_out, *link_flags])
+                rc, _, _, err = run([clang, tda_ll, "-o", bench_out, *link_flags])
                 must(rc == 0, f"error: TDA link failed for {bench_name}", err)
                 return t_opt, stats
 
@@ -244,7 +262,7 @@ def main():
 
             # Measured runs
             base_opt_times = []
-            tda_opt_times  = []
+            tda_opt_times = []
 
             for _ in range(args.runs):
                 t_opt = run_baseline_once(clang)
@@ -265,7 +283,7 @@ def main():
 
             # ---- Timing metrics per bench (compile only) ----
             tb_opt_avg = mean(base_opt_times) if base_opt_times else 0.0
-            tt_opt_avg = mean(tda_opt_times)  if tda_opt_times  else 0.0
+            tt_opt_avg = mean(tda_opt_times) if tda_opt_times else 0.0
 
             abs_tda_time = max(0.0, tt_opt_avg - tb_opt_avg)
             rel_tda_pct = (abs_tda_time / tt_opt_avg * 100.0) if tt_opt_avg > 0 else 0.0
@@ -296,7 +314,7 @@ def main():
         df_stats = pd.DataFrame(index=benches_in_timing)
 
     # Ensure all four known stat columns exist (fill 0 if missing)
-    for desc in (DESC_PTD, DESC_TDP, DESC_PDP, DESC_NDP):
+    for desc in (DESC_1, DESC_2, DESC_3, DESC_4, DESC_5, DESC_6):
         if desc not in df_stats.columns:
             print("not present", desc)
             df_stats[desc] = 0
@@ -308,22 +326,26 @@ def main():
     df_final["abs. time (s)"] = pd.Series({b: timing.get(b, {}).get("abs_time", 0.0) for b in df_final.index})
     df_final["rel. time (%)"] = pd.Series({b: timing.get(b, {}).get("rel_pct", 0.0) for b in df_final.index})
 
-    df_final[ABBR_PTD] = df_stats[DESC_PTD]
-    df_final[ABBR_TDP] = df_stats[DESC_TDP]
-    df_final[ABBR_PDP] = df_stats[DESC_PDP]
-    df_final[ABBR_NDP] = df_stats[DESC_NDP]
+    df_final[ABBR_1] = df_stats[DESC_1]
+    df_final[ABBR_2] = df_stats[DESC_2]
+    df_final[ABBR_3] = df_stats[DESC_3]
+    df_final[ABBR_4] = df_stats[DESC_4]
+    df_final[ABBR_5] = df_stats[DESC_5]
+    df_final[ABBR_6] = df_stats[DESC_6]
 
-    denom = df_final[ABBR_PTD].replace({0: pd.NA})
-    df_final[f"{ABBR_TDP} (%)"] = (df_final[ABBR_TDP] / denom * 100).fillna(0.0)
-    df_final[f"{ABBR_PDP} (%)"] = (df_final[ABBR_PDP] / denom * 100).fillna(0.0)
-    df_final[f"{ABBR_NDP} (%)"] = (df_final[ABBR_NDP] / denom * 100).fillna(0.0)
+    denom = df_final[ABBR_2].replace({0: pd.NA})
+    df_final[f"{ABBR_4} (%)"] = (df_final[ABBR_4] / denom * 100).fillna(0.0)
+    df_final[f"{ABBR_5} (%)"] = (df_final[ABBR_5] / denom * 100).fillna(0.0)
+    df_final[f"{ABBR_6} (%)"] = (df_final[ABBR_6] / denom * 100).fillna(0.0)
 
     ordered_cols = [
         "abs. time (s)", "rel. time (%)",
-        ABBR_PTD,
-        ABBR_TDP, f"{ABBR_TDP} (%)",
-        ABBR_PDP, f"{ABBR_PDP} (%)",
-        ABBR_NDP, f"{ABBR_NDP} (%)",
+        ABBR_1,
+        ABBR_2,
+        ABBR_3,
+        ABBR_4, f"{ABBR_4} (%)",
+        ABBR_5, f"{ABBR_5} (%)",
+        ABBR_6, f"{ABBR_6} (%)",
     ]
     for c in ordered_cols:
         if c not in df_final.columns:
@@ -332,7 +354,7 @@ def main():
 
     df_final["abs. time (s)"] = df_final["abs. time (s)"].round(3)
     df_final["rel. time (%)"] = df_final["rel. time (%)"].round(1)
-    for c in [f"{ABBR_TDP} (%)", f"{ABBR_PDP} (%)", f"{ABBR_NDP} (%)"]:
+    for c in [f"{ABBR_4} (%)", f"{ABBR_5} (%)", f"{ABBR_6} (%)"]:
         df_final[c] = df_final[c].round(1)
 
     output_csv = "stats.csv"
@@ -344,6 +366,7 @@ def main():
                            "display.width", 200,
                            "display.max_colwidth", None):
         print(df_print.to_string(index=False))
+
 
 if __name__ == "__main__":
     main()
