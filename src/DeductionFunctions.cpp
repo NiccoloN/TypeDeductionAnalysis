@@ -52,10 +52,7 @@ void TypeDeductionAnalysis::deduceFromValue(Value* value) {
   if (isToSkip(value))
     return;
 
-  Logger& logger = log();
-  LLVM_DEBUG(logger.log("[Deducing from] ", Logger::Bold).logValueln(value));
-  auto indenter = logger.getIndenter();
-  indenter.increaseIndent();
+  currDeductionValue = value;
 
   if (auto* global = dyn_cast<GlobalVariable>(value))
     deduceFromGlobalVariable(global);
@@ -73,6 +70,8 @@ void TypeDeductionAnalysis::deduceFromValue(Value* value) {
     deduceFromFunction(fun);
   else if (deducedTypes[value].empty())
     updateDeducedTypes(value, TransparentTypeFactory::createFromType(value->getType()));
+
+  currDeductionValue = nullptr;
 }
 
 void TypeDeductionAnalysis::deduceFromGlobalVariable(GlobalVariable* globalVar) {
@@ -91,7 +90,7 @@ void TypeDeductionAnalysis::deduceFromGlobalVariable(GlobalVariable* globalVar) 
       updateDeducedTypes(initializer, valueType->clone());
 
       const TransparentType* globalVarPointedType = globalVarType->getPointedType();
-      if (initializerType->isCompatibleWith(globalVarPointedType))
+      if (initializerType->isStructurallyEquivalent(globalVarPointedType))
         updateDeducedTypes(initializer, globalVarPointedType->clone());
 
       updateDeducedTypes(globalVar, valueType->getPointerToType());
@@ -152,33 +151,13 @@ void TypeDeductionAnalysis::deduceFromLoadStore(Instruction* inst) {
       tbaaUsedForInstruction.insert(inst);
     }
 
-    const TransparentType* fullyUnwrappedPtrOperandType = ptrOperandType->getPointedType();
-    while (fullyUnwrappedPtrOperandType && fullyUnwrappedPtrOperandType->isArrayTT())
-      fullyUnwrappedPtrOperandType = cast<TransparentArrayType>(fullyUnwrappedPtrOperandType)->getElementType();
+    std::unique_ptr<TransparentType> indexedType = ptrOperandType->getIndexedType(valueOperandType);
+    std::unique_ptr<TransparentType> mergedPtrOperandType = nullptr;
+    if (indexedType)
+      mergedPtrOperandType = ptrOperandType->cloneAndSetIndexedType(valueOperandType, valueOperandType);
 
-    if ((valueOperandType->isScalarTT() || valueOperandType->isPointerTT()) && fullyUnwrappedPtrOperandType
-        && fullyUnwrappedPtrOperandType->isStructTT()) {
-      std::unique_ptr<TransparentType> mergedPtrOperandType = ptrOperandType->clone();
-      TransparentType* currType = mergedPtrOperandType->getPointedType();
-      while (currType->isArrayTT())
-        currType = cast<TransparentArrayType>(currType)->getElementType();
-
-      auto* currStructType = cast<TransparentStructType>(currType);
-      while (currType->isStructTT()) {
-        currStructType = cast<TransparentStructType>(currType);
-        currType = currStructType->getFieldType(0);
-      }
-      if (valueOperandType->isCompatibleWith(currType))
-        updateDeducedTypes(valueOperand, currType->clone());
-      currStructType->setFieldType(0, valueOperandType->clone());
-      updateDeducedTypes(ptrOperand, std::move(mergedPtrOperandType));
-    }
-    else {
-      if (valueOperandType->isCompatibleWith(fullyUnwrappedPtrOperandType))
-        if (fullyUnwrappedPtrOperandType)
-          updateDeducedTypes(valueOperand, fullyUnwrappedPtrOperandType->clone());
-      updateDeducedTypes(ptrOperand, valueOperandType->getPointerToType());
-    }
+    updateDeducedTypes(valueOperand, std::move(indexedType));
+    updateDeducedTypes(ptrOperand, mergedPtrOperandType ? std::move(mergedPtrOperandType) : valueOperandType->getPointerToType());
   };
 
   for (const auto& valueOperandType : valueOperandTypes)
@@ -188,6 +167,7 @@ void TypeDeductionAnalysis::deduceFromLoadStore(Instruction* inst) {
 
 void TypeDeductionAnalysis::deduceFromGep(GetElementPtrInst* gep) {
   Value* ptrOperand = gep->getPointerOperand();
+  const TypeAliasSet gepTypes = getOrCreateDeducedTypes(gep);
   const TypeAliasSet ptrOperandTypes = getOrCreateDeducedTypes(ptrOperand);
 
   auto iter = std::ranges::find_if(ptrOperandTypes, [](const auto& type) -> bool {
@@ -198,8 +178,7 @@ void TypeDeductionAnalysis::deduceFromGep(GetElementPtrInst* gep) {
     // ptrOperand is a union
     return;
 
-  Type* srcElLLVMType = gep->getSourceElementType();
-  std::unique_ptr<TransparentType> srcElType = TransparentTypeFactory::createFromType(srcElLLVMType);
+  std::unique_ptr<TransparentType> srcElType = TransparentTypeFactory::createFromType(gep->getSourceElementType());
 
   if (srcElType->isUnion()) {
     updateDeducedTypes(ptrOperand, std::move(srcElType));
@@ -207,23 +186,26 @@ void TypeDeductionAnalysis::deduceFromGep(GetElementPtrInst* gep) {
   }
 
   std::unique_ptr<TransparentType> srcElPtrType = srcElType->getPointerToType();
-  std::unique_ptr<TransparentType> indexedFromSrcElType = srcElPtrType->getIndexedType(srcElLLVMType, gep->indices());
+  std::unique_ptr<TransparentType> indexedFromSrcElType = srcElPtrType->getIndexedType(srcElType.get(), gep->indices());
   if (indexedFromSrcElType)
     updateDeducedTypes(gep, indexedFromSrcElType->getPointerToType());
 
-  auto deduce = [&](const TransparentType* ptrOperandType) {
+  auto deduce = [&](const TransparentType* gepType, const TransparentType* ptrOperandType) {
     std::unique_ptr<TransparentType> indexedFromPtrOpType =
-      ptrOperandType->getIndexedType(srcElLLVMType, gep->indices());
+      ptrOperandType->getIndexedType(srcElType.get(), gep->indices());
     if (indexedFromPtrOpType)
       updateDeducedTypes(gep, indexedFromPtrOpType->getPointerToType());
 
-    std::unique_ptr<TransparentType> mergedPtrOperandType = ptrOperandType->clone();
-    mergedPtrOperandType->cloneAndSetIndexedType(indexedFromPtrOpType.get(), srcElLLVMType, gep->indices());
-    updateDeducedTypes(ptrOperand, std::move(mergedPtrOperandType));
+    std::unique_ptr<TransparentType> ptrOpTypeMergedWithGep =
+      ptrOperandType->cloneAndSetIndexedType(gepType->getPointedType(), srcElType.get(), gep->indices());
+    updateDeducedTypes(ptrOperand, std::move(ptrOpTypeMergedWithGep));
+
+    updateDeducedTypes(ptrOperand, std::move(srcElPtrType));
   };
 
-  for (const auto& ptrOperandType : ptrOperandTypes)
-    deduce(ptrOperandType.get());
+  for (const auto& gepType : gepTypes)
+    for (const auto& ptrOperandType : ptrOperandTypes)
+      deduce(gepType.get(), ptrOperandType.get());
 }
 
 void TypeDeductionAnalysis::deduceFromCall(CallBase* call) {
@@ -263,7 +245,7 @@ void TypeDeductionAnalysis::deduceFromSupportedIntrinsicCall(CallBase* call) {
   assert(intrinsicFun && intrinsicFun->isIntrinsic());
   Intrinsic::ID id = intrinsicFun->getIntrinsicID();
   if (id == Intrinsic::memcpy || id == Intrinsic::memmove)
-    mergeTypeAliasSets(intrinsicFun->getArg(0), intrinsicFun->getArg(1));
+    mergeTypeAliasSets(call->getArgOperand(0), call->getArgOperand(1));
 }
 
 void TypeDeductionAnalysis::mergeTypeAliasSets(Value* value1, Value* value2) {

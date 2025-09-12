@@ -1,0 +1,7 @@
+bench,abs. time (ns),rel. time (%),Total ptr types,Total aliases,Many aliases ptrs,Transparent,Transparent (%),Partially transparent,Partially transparent (%),Opaque,Opaque (%)
+acas,79424258.6,24.3,127,161,29,161,100.0,0,0.0,0,0.0
+ann,37172218.6,13.3,82,86,4,86,100.0,0,0.0,0,0.0
+canny,185540506.6,43.2,1015,1023,8,1023,100.0,0,0.0,0,0.0
+img_scaling,29521951.2,10.8,35,39,4,39,100.0,0,0.0,0,0.0
+jpeg_compress,4792135579.8,95.1,724,1239,170,638,51.5,537,43.3,64,5.2
+latnav,34562829.0,12.6,46,63,11,63,100.0,0,0.0,0,0.0

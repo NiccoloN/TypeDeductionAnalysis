@@ -1,0 +1,6 @@
+bench,abs. time (ns),rel. time (%),Total ptr types,Total aliases,Many aliases ptrs,Transparent,Transparent (%),Partially transparent,Partially transparent (%),Opaque,Opaque (%)
+blackscholes,61928773,1.0,292,444,85,395,89.0,13,2.9,36,8.1
+fft,10356689092,74.3,355,2417,150,1544,63.9,833,34.5,40,1.7
+inversek2j,104989324,2.4,274,390,73,250,64.1,97,24.9,43,11.0
+jmeint,298647429,7.1,1017,1132,75,992,87.6,97,8.6,43,3.8
+sobel,56211466082,93.1,1512,3738,309,1818,48.6,1838,49.2,82,2.2
