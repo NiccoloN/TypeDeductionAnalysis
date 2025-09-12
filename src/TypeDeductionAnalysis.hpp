@@ -27,6 +27,7 @@ private:
   std::list<llvm::Value*> deductionQueue;
   std::unordered_map<llvm::Value*, TypeAliasSet> deducedTypes;
   llvm::SmallPtrSet<llvm::Instruction*, 32> tbaaUsedForInstruction;
+  llvm::Value* currDeductionValue = nullptr;
   bool changed = true;
 
   const TypeAliasSet& updateDeducedTypes(llvm::Value* value, std::unique_ptr<TransparentType> deducedType);

@@ -126,6 +126,16 @@ const TypeAliasSet& TypeDeductionAnalysis::updateDeducedTypes(Value* value,
   TypeAliasSet& typeAliasSet = deducedTypes[value];
   if (!deducedType)
     return typeAliasSet;
+
+  Logger& logger = log();
+  auto indenter = logger.getIndenter();
+  auto logDeductionValue = [&] {
+    if (!currDeductionValue)
+      return;
+    LLVM_DEBUG(logger.log("[Deducing from] ", Logger::Bold).logValueln(currDeductionValue));
+    indenter.increaseIndent();
+  };
+
   bool typeSetChanged = false;
   const auto iter = std::ranges::find_if(
     typeAliasSet, [&deducedType](const auto& type) -> bool { return type->isCompatibleWith(deducedType.get()); });
@@ -133,9 +143,8 @@ const TypeAliasSet& TypeDeductionAnalysis::updateDeducedTypes(Value* value,
     std::unique_ptr<TransparentType> merged = (*iter)->mergeWith(deducedType.get());
     if (*merged != **iter) {
       LLVM_DEBUG(
-        Logger& logger = log();
+        logDeductionValue();
         logger.log("Changed (merge) type alias set of: ").logValueln(value);
-        auto indenter = logger.getIndenter();
         indenter.increaseIndent();
         logger.log("from: ").logln(typeAliasSet, Logger::Cyan););
       typeAliasSet.erase(iter);
@@ -144,11 +153,12 @@ const TypeAliasSet& TypeDeductionAnalysis::updateDeducedTypes(Value* value,
     }
   }
   else {
-    assert(deducedType->isPointerTT() || typeAliasSet.empty());
+    assert(typeAliasSet.empty()                                                      // First alias
+           || ((*typeAliasSet.begin())->isPointerTT() && deducedType->isPointerTT()) // All pointers
+           || (*typeAliasSet.begin())->isStructurallyEquivalent(deducedType.get())); // All structurally equivalent
     LLVM_DEBUG(
-      Logger& logger = log();
+      logDeductionValue();
       logger.log("Changed (insert) type alias set of: ").logValueln(value);
-      auto indenter = logger.getIndenter();
       indenter.increaseIndent();
       logger.log("from: ").logln(typeAliasSet, Logger::Cyan););
     typeAliasSet.insert(std::move(deducedType));
@@ -157,11 +167,7 @@ const TypeAliasSet& TypeDeductionAnalysis::updateDeducedTypes(Value* value,
 
   if (typeSetChanged) {
     changed = true;
-    LLVM_DEBUG(
-      Logger& logger = log();
-      auto indenter = logger.getIndenter();
-      indenter.increaseIndent();
-      logger.log("to:   ").logln(typeAliasSet, Logger::Cyan););
+    LLVM_DEBUG(logger.log("to:   ").logln(typeAliasSet, Logger::Cyan););
   }
   return typeAliasSet;
 }

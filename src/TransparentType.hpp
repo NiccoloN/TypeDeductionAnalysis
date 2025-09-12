@@ -49,7 +49,8 @@ public:
 
   llvm::Type* getLLVMType() const { return llvmType; }
   void setLLVMType(llvm::Type* llvmType) {
-    assert(isCompatibleLLVMType(llvmType));
+    if (llvmType)
+      assert(isCompatibleLLVMType(llvmType));
     this->llvmType = llvmType;
   }
 
@@ -77,11 +78,16 @@ public:
   virtual bool containsFloatingPointType() const { return llvmType->isFloatingPointTy(); }
   llvm::Type* toLLVMType() const { return llvmType; }
 
-  std::unique_ptr<TransparentType> getIndexedType(llvm::Type* gepSrcElType,
-                                                  llvm::iterator_range<const llvm::Use*> gepIndices) const;
-  std::unique_ptr<TransparentType> cloneAndSetIndexedType(const TransparentType* setType,
-                                                          llvm::Type* gepSrcElType,
-                                                          llvm::iterator_range<const llvm::Use*> gepIndices) const;
+  std::unique_ptr<TransparentType>
+  getIndexedType(const TransparentType* gepSrcElType,
+                 std::optional<llvm::iterator_range<llvm::Use*>> gepIndices = std::nullopt) const;
+
+  std::unique_ptr<TransparentType>
+  cloneAndSetIndexedType(const TransparentType* setType,
+                         const TransparentType* gepSrcElType,
+                         std::optional<llvm::iterator_range<llvm::Use*>> gepIndices = std::nullopt) const;
+
+  bool isStructurallyEquivalent(const TransparentType* other) const;
 
   virtual bool operator==(const TransparentType& other) const;
   bool operator!=(const TransparentType& other) const { return !(*this == other); }
@@ -101,13 +107,12 @@ protected:
   TransparentType(llvm::Type* unwrappedType, bool isUnion = false)
   : llvmType(unwrappedType), isAUnion(isUnion) {}
 
-  static bool isEqual(const TransparentType* a, const TransparentType* b);
-
   const TransparentType* findGepSrcElementType(const TransparentType* type) const;
 
-  std::unique_ptr<TransparentType> getOrSetIndexedType(llvm::Type* gepSrcElType,
-                                                       llvm::iterator_range<const llvm::Use*> gepIndices,
-                                                       const TransparentType* setType = nullptr) const;
+  std::unique_ptr<TransparentType> getOrSetIndexedType(const TransparentType* gepSrcElType,
+                                                       std::optional<llvm::iterator_range<llvm::Use*>> gepIndices,
+                                                       const TransparentType* setType = nullptr,
+                                                       bool set = false) const;
 
   TransparentType* getOrSetIndexedType(TransparentType* ptrOperandType,
                                        const TransparentType* gepSrcElType,
