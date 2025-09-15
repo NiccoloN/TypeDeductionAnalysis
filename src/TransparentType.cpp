@@ -116,7 +116,7 @@ bool TransparentType::isStructurallyEquivalent(const TransparentType* other) con
     return false;
   if (isPlaceholder() || other->isPlaceholder())
     return true;
-  if (isScalarTT() && other->isScalarTT())
+  if (isPrimitiveTT() && other->isPrimitiveTT())
     return llvmType == other->llvmType;
   if (isPointerTT() && other->isPointerTT())
     return true;
@@ -168,7 +168,7 @@ std::unique_ptr<TransparentType> TransparentType::getOrSetIndexedType(const Tran
     return nullptr;
 
   const TransparentType* startingPoint = nullptr;
-  if (gepIndices && (gepSrcElType->isScalarTT() || thisPointed->isScalarTT()))
+  if (gepIndices && (gepSrcElType->isPrimitiveTT() || thisPointed->isPrimitiveTT()))
     startingPoint = thisPointed;
   else
     startingPoint = findGepSrcElementType(gepSrcElType);
@@ -201,10 +201,10 @@ TransparentType* TransparentType::getOrSetIndexedType(TransparentType* ptrOperan
     TransparentType* ptrOpElementType = cast<TransparentArrayType>(ptrOperandType)->getElementType();
     TransparentType* gepSrcElElementType = cast<TransparentArrayType>(gepSrcElType)->getElementType();
 
-    if (gepSrcElElementType->isScalarTT()) {
+    if (gepSrcElElementType->isPrimitiveTT()) {
       assert(gepIndices.empty());
 
-      if (ptrOpElementType->isScalarTT() || ptrOpElementType->isPointerTT()) {
+      if (ptrOpElementType->isPrimitiveTT() || ptrOpElementType->isPointerTT()) {
         if (setType)
           cast<TransparentArrayType>(ptrOperandType)->setElementType(setType->clone());
         return ptrOpElementType;
@@ -281,7 +281,7 @@ TransparentType* TransparentType::getOrSetIndexedType(TransparentType* ptrOperan
     llvm_unreachable("wtf");
   }
 
-  if (gepSrcElType->isArrayTT() && ptrOperandType->isScalarTT())
+  if (gepSrcElType->isArrayTT() && ptrOperandType->isPrimitiveTT())
     return nullptr;
 
   if (gepSrcElType->isStructTT() && ptrOperandType->isStructTT()) {
@@ -331,8 +331,8 @@ bool TransparentType::isCompatibleWith(const TransparentType* other) const {
   }
   if (const auto* otherArray = dyn_cast<TransparentArrayType>(other))
     return otherArray->getElementType()->isCompatibleWith(this);
-  if (isScalarTT()) {
-    if (!other->isScalarTT())
+  if (isPrimitiveTT()) {
+    if (!other->isPrimitiveTT())
       return false;
     return llvmType == other->llvmType;
   }
@@ -361,7 +361,7 @@ std::unique_ptr<TransparentType> TransparentType::mergeWith(const TransparentTyp
   }
   if (const auto* otherArray = dyn_cast<TransparentArrayType>(other))
     return otherArray->mergeWith(this);
-  if (isScalarTT())
+  if (isPrimitiveTT())
     return clone();
   llvm_unreachable("Not a pointer nor a scalar");
 }
