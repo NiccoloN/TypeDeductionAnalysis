@@ -34,15 +34,15 @@ class TransparentType : public Printable {
 
 public:
   enum TransparentTypeKind {
-    K_Scalar,
+    K_Primitive,
     K_Pointer,
     K_Array,
     K_Struct
   };
 
-  static bool classof(const TransparentType* type) { return type->getKind() == K_Scalar; }
+  static bool classof(const TransparentType* type) { return type->getKind() == K_Primitive; }
 
-  virtual TransparentTypeKind getKind() const { return K_Scalar; }
+  virtual TransparentTypeKind getKind() const { return K_Primitive; }
   virtual bool isCompatibleLLVMType(llvm::Type* type) const { return type->getNumContainedTypes() == 0; }
 
   TransparentType() = default;
@@ -61,13 +61,20 @@ public:
 
   virtual bool isOpaquePtr() const { return false; }
   virtual bool containsOpaquePtr() const { return false; }
-  bool isPlaceholder() const { return isScalarTT() && !llvmType; }
-  bool isUnion() const { return isScalarTT() && isAUnion; }
+  bool isPlaceholder() const { return isPrimitiveTT() && !llvmType; }
+  bool isUnion() const { return isPrimitiveTT() && isAUnion; }
 
-  bool isScalarTT() const { return getKind() == K_Scalar; }
+  bool isPrimitiveTT() const { return getKind() == K_Primitive; }
   bool isPointerTT() const { return getKind() == K_Pointer; }
   bool isArrayTT() const { return getKind() == K_Array; }
   bool isStructTT() const { return getKind() == K_Struct; }
+
+  virtual bool isPrimitiveTTOrPtrTo() const { return isPrimitiveTT(); }
+  virtual bool isArrayTTOrPtrTo() const { return isArrayTT(); }
+  virtual bool isStructTTOrPtrTo() const { return isStructTT(); }
+
+  virtual const TransparentType* getFirstNonPtr() const { return this; }
+  virtual TransparentType* getFirstNonPtr() { return this; }
 
   bool isVoidTy() const { return llvmType && llvmType->isVoidTy(); }
   virtual bool isByteTyOrPtrTo() const { return llvmType && llvmType == llvm::Type::getInt8Ty(llvmType->getContext()); }
@@ -146,6 +153,13 @@ public:
 
   bool isOpaquePtr() const override { return !pointedType; }
   bool containsOpaquePtr() const override { return !pointedType || pointedType->containsOpaquePtr(); }
+
+  bool isPrimitiveTTOrPtrTo() const override { return pointedType && pointedType->isPrimitiveTT(); }
+  bool isArrayTTOrPtrTo() const override { return pointedType && pointedType->isArrayTT(); }
+  bool isStructTTOrPtrTo() const override { return pointedType && pointedType->isStructTT(); }
+
+  const TransparentType* getFirstNonPtr() const override { return pointedType ? pointedType.get() : nullptr; }
+  TransparentType* getFirstNonPtr() override { return pointedType ? pointedType.get() : nullptr; }
 
   bool isByteTyOrPtrTo() const override { return pointedType && pointedType->isByteTyOrPtrTo(); }
   bool isIntegerTyOrPtrTo() const override { return pointedType && pointedType->isIntegerTyOrPtrTo(); }
