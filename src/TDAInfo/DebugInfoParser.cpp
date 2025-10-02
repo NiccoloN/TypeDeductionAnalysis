@@ -2,6 +2,7 @@
 
 #include <llvm/BinaryFormat/Dwarf.h>
 #include <llvm/IR/DataLayout.h>
+#include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/Module.h>
 
 using namespace llvm;
@@ -64,21 +65,18 @@ void DebugInfoParser::insertPaddingInfo(DICompositeType* diCompositeType,
 }
 
 std::unordered_map<StructType*, StructPaddingInfo> DebugInfoParser::getStructPaddingInfo(const Module& module) {
+  SmallVector<DICompositeType*, 32> diCompositeTypes;
+  DebugInfoFinder finder;
+  finder.processModule(module);
+  for (DIScope* diScope : finder.types())
+    if (auto* diCompositeType = dyn_cast<DICompositeType>(diScope))
+      diCompositeTypes.push_back(diCompositeType);
+  // Recursively insert padding info of composite types
   std::unordered_map<StructType*, StructPaddingInfo> structPaddingInfo;
-  if (NamedMDNode* compileUnits = module.getNamedMetadata("llvm.dbg.cu")) {
-    SmallVector<DICompositeType*, 32> diCompositeTypes;
-    // Collect top-level composite types from debug info
-    for (MDNode* compileUnitMd : compileUnits->operands())
-      if (auto* compileUnit = dyn_cast<DICompileUnit>(compileUnitMd))
-        for (DIScope* diScope : compileUnit->getRetainedTypes())
-          if (auto* diCompositeType = dyn_cast<DICompositeType>(diScope))
-            diCompositeTypes.push_back(diCompositeType);
-    // Recursively insert padding info of composite types
-    SmallDenseSet<DICompositeType*> visited;
-    LLVMContext& ctx = module.getContext();
-    const DataLayout& dataLayout = module.getDataLayout();
-    for (DICompositeType* diCompositeType : diCompositeTypes)
-      insertPaddingInfo(diCompositeType, structPaddingInfo, visited, ctx, dataLayout);
-  }
+  SmallDenseSet<DICompositeType*> visited;
+  LLVMContext& ctx = module.getContext();
+  const DataLayout& dataLayout = module.getDataLayout();
+  for (DICompositeType* diCompositeType : diCompositeTypes)
+    insertPaddingInfo(diCompositeType, structPaddingInfo, visited, ctx, dataLayout);
   return structPaddingInfo;
 }
