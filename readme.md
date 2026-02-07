@@ -1,1 +1,1 @@
-![](images/tda-infographic.png)
+![](docs/images/tda-infographic.png)
