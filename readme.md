@@ -1,0 +1,1 @@
+![](images/tda-infographic.png)
