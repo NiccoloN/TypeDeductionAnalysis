@@ -1,52 +1,39 @@
 #pragma once
 
-#include "Containers/InsertionOrderedMap.hpp"
-#include "TransparentType.hpp"
-
-#include <llvm/IR/Instructions.h>
+#include <llvm/ADT/SmallPtrSet.h>
+#include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
-
-#include <unordered_set>
+#include <llvm/IR/Value.h>
 
 namespace tda {
 
-using TypeAliasSet = std::unordered_set<std::unique_ptr<TransparentType>>;
+class TransparentType;
+class TypeDispatcher;
+
+using TypeAliasSet = llvm::SmallPtrSet<const TransparentType*, 4>;
+struct Result {
+  llvm::Module* module;
+  llvm::DenseMap<llvm::Value*, TypeAliasSet> transparentTypes;
+
+  Result() = delete;
+  Result(llvm::Module* llvmModule, llvm::DenseMap<llvm::Value*, TypeAliasSet>&& types);
+  Result(const Result&) = delete;
+  Result(Result&& other);
+  Result& operator=(const Result&) = delete;
+  Result& operator=(Result&& other);
+  ~Result();
+};
 
 class TypeDeductionAnalysis : public llvm::AnalysisInfoMixin<TypeDeductionAnalysis> {
   friend AnalysisInfoMixin;
+
+private:
   static llvm::AnalysisKey Key;
 
 public:
-  struct Result {
-    llvm::DenseMap<llvm::Value*, TypeAliasSet> transparentTypes;
-  };
+  using Result = tda::Result;
 
-  Result run(llvm::Module& m, llvm::ModuleAnalysisManager&);
-
-private:
-  std::list<llvm::Value*> deductionQueue;
-  std::unordered_map<llvm::Value*, TypeAliasSet> deducedTypes;
-  llvm::SmallPtrSet<llvm::Instruction*, 32> tbaaUsedForInstruction;
-  llvm::Value* currDeductionValue = nullptr;
-  bool changed = true;
-
-  const TypeAliasSet& updateDeducedTypes(llvm::Value* value, std::unique_ptr<TransparentType> deducedType);
-  TypeAliasSet getOrCreateDeducedTypes(llvm::Value* value);
-
-  void deduceFromValue(llvm::Value* value);
-
-  void deduceFromGlobalVariable(llvm::GlobalVariable* globalVar);
-  void deduceFromAlloca(llvm::AllocaInst* alloca);
-  void deduceFromLoadStore(llvm::Instruction* inst);
-  void deduceFromGep(llvm::GetElementPtrInst* gep);
-
-  void deduceFromCall(llvm::CallBase* call);
-  void deduceFromFunction(llvm::Function* function);
-  void deduceFromSupportedIntrinsicCall(llvm::CallBase* call);
-
-  void mergeTypeAliasSets(llvm::Value* value1, llvm::Value* value2);
-
-  void logDeducedTypes();
+  Result run(llvm::Module& llvmModule, llvm::ModuleAnalysisManager&);
 };
 
 } // namespace tda
