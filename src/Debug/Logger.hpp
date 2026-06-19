@@ -117,6 +117,14 @@ public:
     return *this;
   }
 
+  // Log for Printable objects
+  template <PrintableConcept T>
+  Logger& log(const T* printable, Color color = Current) {
+    if (printable)
+      return log(printable->toString(), color);
+    return log("null", color);
+  }
+
   // Log for smart ptr to Printable objects
   template <SmartPtrToPrintable T>
   Logger& log(const T& ptr, Color color = Current) {

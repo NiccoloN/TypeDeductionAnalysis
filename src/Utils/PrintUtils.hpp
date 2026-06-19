@@ -1,7 +1,9 @@
 #pragma once
 
 #include <llvm/IR/Type.h>
+
 #include <sstream>
+#include <string>
 
 namespace tda {
 
@@ -74,4 +76,4 @@ inline std::string repeatString(const std::string& str, unsigned n) {
   return oss.str();
 }
 
-} // namespace llvm
+} // namespace tda

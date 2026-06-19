@@ -1,70 +1,83 @@
-#include "Debug/Logger.hpp"
 #include "TBAAParser.hpp"
+#include "TransparentType.hpp"
+#include "TypeDispatcher.hpp"
 
+#include "llvm/IR/Instructions.h"
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/DataLayout.h>
-#include <llvm/IR/Module.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Metadata.h>
 #include <llvm/IR/Operator.h>
 
-#include <algorithm>
+#include <utility>
 
-using namespace llvm;
-using namespace tda;
+namespace tda {
 
-std::pair<std::unique_ptr<TransparentType>, std::unique_ptr<TransparentType>>
-TBAAParser::getLoadStoreTypesFromTbaa(const Instruction* inst) {
-  assert(isa<LoadInst>(inst) || isa<StoreInst>(inst));
-  const MDNode* mdNode = inst->getMetadata(LLVMContext::MD_tbaa);
+const std::pair<const TransparentType*, const TransparentType*>
+TBAAParser::getOrCreateFromLoadStoreMetaData(const llvm::Instruction* inst) {
+  const llvm::MDNode* mdNode = inst->getMetadata(llvm::LLVMContext::MD_tbaa);
   if (!mdNode)
     return {nullptr, nullptr};
-  auto* baseTypeMd = cast<MDNode>(mdNode->getOperand(0));
-  auto* accessTypeMd = cast<MDNode>(mdNode->getOperand(1));
-  unsigned accessOffset = mdconst::extract_or_null<ConstantInt>(mdNode->getOperand(2))->getZExtValue();
+
+  const auto* baseTypeMd = cast<llvm::MDNode>(mdNode->getOperand(0));
   if (!isStructTypeDescriptor(baseTypeMd))
     return {nullptr, nullptr};
+
+  const auto* accessTypeMd = cast<llvm::MDNode>(mdNode->getOperand(1));
+  unsigned accessOffset = llvm::mdconst::extract_or_null<llvm::ConstantInt>(mdNode->getOperand(2))->getZExtValue();
   return getPlaceholderStructTypes(baseTypeMd, accessTypeMd, accessOffset);
 }
 
-std::pair<std::unique_ptr<TransparentType>, std::unique_ptr<TransparentType>>
-TBAAParser::getPlaceholderStructTypes(const MDNode* structTypeMd, const MDNode* accessTypeMd, unsigned accessOffset) {
-  unsigned numFields = structTypeMd->getNumOperands() / 3 - 1;
-  std::unique_ptr<TransparentType> accessedType = nullptr;
-  SmallVector<std::unique_ptr<TransparentType>> fieldTypes;
-  SmallVector<unsigned> fieldOffsets;
-  SmallVector<unsigned> fieldSizes;
-  fieldTypes.reserve(numFields);
-  bool foundAccess = false;
-  for (unsigned i = 0; i < numFields; i++) {
-    auto* fieldTypeMd = cast<MDNode>(structTypeMd->getOperand(3 + i * 3));
-    unsigned fieldOffset = mdconst::extract<ConstantInt>(structTypeMd->getOperand(3 + i * 3 + 1))->getZExtValue();
-    unsigned fieldSize = mdconst::extract<ConstantInt>(structTypeMd->getOperand(3 + i * 3 + 2))->getZExtValue();
+bool TBAAParser::isStructTypeDescriptor(const llvm::MDNode* mdNode) { return mdNode->getNumOperands() >= 6; }
 
+const std::pair<const TransparentType*, const TransparentType*> TBAAParser::getPlaceholderStructTypes(
+  const llvm::MDNode* structTypeMd, const llvm::MDNode* accessTypeMd, const unsigned accessOffset) {
+  llvm::LLVMContext* llvmContext = &structTypeMd->getContext();
+  const unsigned numFields = structTypeMd->getNumOperands() / 3 - 1;
+  const TransparentType* accessedType = nullptr;
+  llvm::SmallVector<const TransparentType*, 8> fieldTypes;
+  llvm::SmallVector<unsigned> fieldOffsets;
+  llvm::SmallVector<unsigned> fieldSizes;
+
+  bool foundAccess = false;
+  fieldTypes.reserve(numFields);
+  fieldOffsets.reserve(numFields);
+  fieldSizes.reserve(numFields);
+  for (unsigned i = 0; i < numFields; ++i) {
+    const auto* fieldTypeMd = cast<llvm::MDNode>(structTypeMd->getOperand(3 + i * 3));
+
+    unsigned fieldOffset =
+      llvm::mdconst::extract<llvm::ConstantInt>(structTypeMd->getOperand(3 + i * 3 + 1))->getZExtValue();
     fieldOffsets.push_back(fieldOffset);
+
+    unsigned fieldSize =
+      llvm::mdconst::extract<llvm::ConstantInt>(structTypeMd->getOperand(3 + i * 3 + 2))->getZExtValue();
     fieldSizes.push_back(fieldSize);
 
     unsigned nextFieldOffset = 0;
-    bool isLastField = i + 1 == numFields;
+    bool isLastField = (numFields == i + 1);
     if (!isLastField)
-      nextFieldOffset = mdconst::extract<ConstantInt>(structTypeMd->getOperand(3 + (i + 1) * 3 + 1))->getZExtValue();
+      nextFieldOffset =
+        llvm::mdconst::extract<llvm::ConstantInt>(structTypeMd->getOperand(3 + (i + 1) * 3 + 1))->getZExtValue();
+
     foundAccess = (!foundAccess && isLastField) || (accessOffset >= fieldOffset && accessOffset < nextFieldOffset);
 
     if (isStructTypeDescriptor(fieldTypeMd)) {
-      auto [fieldType, accessedTypeInField] =
+      const auto [fieldType, accessedTypeInField] =
         getPlaceholderStructTypes(fieldTypeMd, accessTypeMd, accessOffset - fieldOffset);
+
       if (foundAccess)
-        accessedType = accessTypeMd == fieldTypeMd ? fieldType->clone() : std::move(accessedTypeInField);
-      fieldTypes.push_back(std::move(fieldType));
+        accessedType = (accessTypeMd == fieldTypeMd) ? fieldType : accessedTypeInField;
+
+      fieldTypes.push_back(fieldType);
     }
     else
-      fieldTypes.push_back(TransparentTypeFactory::createFromType(nullptr, 0));
+      fieldTypes.push_back(TransparentType::get(llvmContext, nullptr));
   }
-  return {TransparentTypeFactory::createFromFields(fieldTypes, fieldOffsets, fieldSizes, 1), std::move(accessedType)};
+
+  const TransparentStructType* structType =
+    TransparentStructType::get(llvmContext, fieldTypes, nullptr, fieldOffsets, fieldSizes);
+  return {TransparentPointerType::get(llvmContext, structType), accessedType};
 }
 
-std::unordered_map<StructType*, StructPaddingInfo> TBAAParser::getStructPaddingInfo(Module& module) {
-  std::unordered_map<StructType*, StructPaddingInfo> structPaddingInfo;
-  const DataLayout& dataLayout = module.getDataLayout();
-  // TODO
-  return structPaddingInfo;
-}
-
-bool TBAAParser::isStructTypeDescriptor(const MDNode* mdNode) { return mdNode->getNumOperands() >= 6; }
+} // namespace tda

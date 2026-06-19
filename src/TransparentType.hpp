@@ -2,35 +2,29 @@
 
 #include "Utils/PrintUtils.hpp"
 
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Use.h"
+#include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/FoldingSet.h>
 #include <llvm/ADT/SmallPtrSet.h>
+#include <llvm/ADT/SmallSet.h>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/DerivedTypes.h>
-#include <llvm/IR/Instructions.h>
+#include <llvm/IR/Instruction.h>
+#include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Type.h>
+#include <llvm/IR/Value.h>
 
-#include <list>
-#include <memory>
-#include <ranges>
-#include <set>
+#include <optional>
+#include <string>
+#include <utility>
 
 namespace tda {
 
-class TransparentType;
-
-class TransparentTypeFactory {
-public:
-  static std::unique_ptr<TransparentType> createFromValue(const llvm::Value* value);
-  static std::unique_ptr<TransparentType> createFromType(llvm::Type* unwrappedType, unsigned indirections = 0);
-  static std::unique_ptr<TransparentType> createFromExisting(const TransparentType* unwrappedType,
-                                                             unsigned indirections = 0);
-  static std::unique_ptr<TransparentType>
-  createFromFields(llvm::SmallVector<std::unique_ptr<TransparentType>>& fieldTypes,
-                   const llvm::SmallVector<unsigned>& fieldOffsets,
-                   const llvm::SmallVector<unsigned>& fieldSizes,
-                   unsigned indirections = 0);
-};
+class TypeDispatcher;
 
 class TransparentType : public Printable {
-  friend TransparentTypeFactory;
+  friend TypeDispatcher;
 
 public:
   enum TransparentTypeKind {
@@ -40,257 +34,251 @@ public:
     K_Struct
   };
 
-  static bool classof(const TransparentType* type) { return type->getKind() == K_Primitive; }
+  static const TransparentType*
+  get(llvm::LLVMContext* llvmContext, const llvm::Type* primitiveType, const bool isUnion = false);
+  static const TransparentType* get(const llvm::Type* llvmType, const unsigned indirections = 0);
+  static const TransparentType* get(const llvm::Value* value);
+  static const std::pair<const TransparentType*, const TransparentType*> get(const llvm::Instruction* inst);
 
-  virtual TransparentTypeKind getKind() const { return K_Primitive; }
-  virtual bool isCompatibleLLVMType(llvm::Type* type) const { return type->getNumContainedTypes() == 0; }
+  static bool classof(const TransparentType* type);
 
-  TransparentType() = default;
+  TransparentType() = delete;
+  TransparentType& operator=(const TransparentType&) = delete;
+  TransparentType& operator=(TransparentType&&) = delete;
+  virtual ~TransparentType();
 
-  llvm::Type* getLLVMType() const { return llvmType; }
-  void setLLVMType(llvm::Type* llvmType) {
-    if (llvmType)
-      assert(isCompatibleLLVMType(llvmType));
-    this->llvmType = llvmType;
-  }
+  virtual bool operator==(const TransparentType& otherType) const;
+  bool operator!=(const TransparentType& otherType) const;
 
-  virtual const TransparentType* getFullyUnwrappedType() const { return this; }
-  virtual TransparentType* getFullyUnwrappedType() { return this; }
-  virtual TransparentType* getPointedType() const;
-  std::unique_ptr<TransparentType> getPointerToType() const;
+  virtual TransparentTypeKind getKind() const;
 
-  virtual bool isOpaquePtr() const { return false; }
-  virtual bool containsOpaquePtr() const { return false; }
-  bool isPlaceholder() const { return isPrimitiveTT() && !llvmType; }
-  bool isUnion() const { return isPrimitiveTT() && isAUnion; }
+  const llvm::Type* getLLVMType() const;
+  const llvm::Type* toLLVMType() const;
+  llvm::LLVMContext* getLLVMContext() const;
+  virtual llvm::SmallPtrSet<const llvm::Type*, 8> getContainedLLVMTypes() const;
+  virtual bool isCompatibleLLVMType(const llvm::Type* llvmType) const;
 
-  bool isPrimitiveTT() const { return getKind() == K_Primitive; }
-  bool isPointerTT() const { return getKind() == K_Pointer; }
-  bool isArrayTT() const { return getKind() == K_Array; }
-  bool isStructTT() const { return getKind() == K_Struct; }
+  virtual const TransparentType* getFullyUnwrappedType() const;
+  virtual const TransparentType* getPointedType() const;
+  virtual const TransparentType* getFirstNonPtr() const;
 
-  virtual bool isPrimitiveTTOrPtrTo() const { return isPrimitiveTT(); }
-  virtual bool isArrayTTOrPtrTo() const { return isArrayTT(); }
-  virtual bool isStructTTOrPtrTo() const { return isStructTT(); }
+  virtual bool isOpaquePtr() const;
+  virtual bool containsOpaquePtr() const;
 
-  virtual const TransparentType* getFirstNonPtr() const { return this; }
-  virtual TransparentType* getFirstNonPtr() { return this; }
-
-  bool isVoidTy() const { return llvmType && llvmType->isVoidTy(); }
-  virtual bool isByteTyOrPtrTo() const { return llvmType && llvmType == llvm::Type::getInt8Ty(llvmType->getContext()); }
-  virtual bool isIntegerTyOrPtrTo() const { return llvmType && llvmType->isIntegerTy(); }
-  virtual bool isFloatingPointTyOrPtrTo() const { return llvmType && llvmType->isFloatingPointTy(); }
-
-  virtual llvm::SmallPtrSet<llvm::Type*, 4> getContainedLLVMTypes() const;
-  virtual bool containsFloatingPointType() const { return llvmType->isFloatingPointTy(); }
-  llvm::Type* toLLVMType() const { return llvmType; }
-
-  std::unique_ptr<TransparentType>
-  getIndexedType(const TransparentType* gepSrcElType,
-                 std::optional<llvm::iterator_range<llvm::Use*>> gepIndices = std::nullopt) const;
-
-  std::unique_ptr<TransparentType>
-  cloneAndSetIndexedType(const TransparentType* setType,
-                         const TransparentType* gepSrcElType,
-                         std::optional<llvm::iterator_range<llvm::Use*>> gepIndices = std::nullopt) const;
-
-  bool isStructurallyEquivalent(const TransparentType* other) const;
-
-  virtual bool operator==(const TransparentType& other) const;
-  bool operator!=(const TransparentType& other) const { return !(*this == other); }
-
-  virtual bool isCompatibleWith(const TransparentType* other) const;
-  virtual std::unique_ptr<TransparentType> mergeWith(const TransparentType* other) const;
-
-  virtual std::unique_ptr<TransparentType> clone() const;
-  std::string toString() const override;
-
-protected:
-  llvm::Type* llvmType = nullptr;
-  bool isAUnion = false;
-
-  TransparentType(const TransparentType& other) = default;
-
-  TransparentType(llvm::Type* unwrappedType, bool isUnion = false)
-  : llvmType(unwrappedType), isAUnion(isUnion) {}
+  bool isPlaceholder() const;
+  bool containsPlaceholder() const;
+  bool isUnion() const;
+  bool isPrimitiveTT() const;
+  bool isPointerTT() const;
+  bool isArrayTT() const;
+  bool isStructTT() const;
+  virtual bool isPrimitiveTTOrPtrTo() const;
+  virtual bool isArrayTTOrPtrTo() const;
+  virtual bool isStructTTOrPtrTo() const;
+  bool isVoidTy() const;
+  virtual bool isByteTyOrPtrTo() const;
+  virtual bool isIntegerTyOrPtrTo() const;
+  virtual bool isFloatingPointTyOrPtrTo() const;
+  virtual bool containsFloatingPointType() const;
 
   const TransparentType* findGepSrcElementType(const TransparentType* type) const;
 
-  std::unique_ptr<TransparentType> getOrSetIndexedType(const TransparentType* gepSrcElType,
-                                                       std::optional<llvm::iterator_range<llvm::Use*>> gepIndices,
-                                                       const TransparentType* setType = nullptr,
-                                                       bool set = false) const;
+  bool isStructurallyEquivalent(const TransparentType* otherType) const;
+  virtual bool isCompatibleWith(const TransparentType* otherType) const;
 
-  TransparentType* getOrSetIndexedType(TransparentType* ptrOperandType,
-                                       const TransparentType* gepSrcElType,
-                                       std::list<const llvm::Value*>& gepIndices,
-                                       const TransparentType* mergeType = nullptr) const;
+  const TransparentType*
+  getOrSetIndexedType(const TransparentType* gepSrcElemType,
+                      std::optional<llvm::iterator_range<const llvm::Use*>> gepIndices = std::nullopt,
+                      std::optional<const TransparentType*> setType = std::nullopt) const;
+
+  virtual const TransparentType* mergeWith(const TransparentType* otherType) const;
+
+  virtual std::string toString() const override;
+
+protected:
+  llvm::LLVMContext* llvmContext = nullptr;
+  const llvm::Type* const llvmType = nullptr;
+  const bool isAUnion = false;
+
+  TransparentType(llvm::LLVMContext* llvmContext, const llvm::Type* const llvmType, const bool isUnion = false);
+  TransparentType(const TransparentType&);
+  TransparentType(TransparentType&&);
 };
 
 class TransparentPointerType : public TransparentType {
-  friend TransparentTypeFactory;
+  friend TypeDispatcher;
 
 public:
-  static bool classof(const TransparentType* type) { return type->getKind() == K_Pointer; }
+  static const TransparentPointerType*
+  get(llvm::LLVMContext* llvmContext, const TransparentType* pointedType, const unsigned indirections = 1);
 
-  TransparentTypeKind getKind() const override { return K_Pointer; }
-  bool isCompatibleLLVMType(llvm::Type* type) const override { return type->isPointerTy(); }
+  static bool classof(const TransparentType* type);
 
-  TransparentPointerType() = default;
+  TransparentPointerType() = delete;
+  TransparentPointerType& operator=(const TransparentPointerType&) = delete;
+  TransparentPointerType& operator=(TransparentPointerType&&) = delete;
+  ~TransparentPointerType() override;
 
-  TransparentPointerType(const TransparentPointerType& other)
-  : TransparentType(other), pointedType(other.pointedType ? other.pointedType->clone() : nullptr) {}
+  bool operator==(const TransparentType& otherType) const override;
 
-  TransparentType* getPointedType() const override { return pointedType ? pointedType.get() : nullptr; }
-  void setPointedType(std::unique_ptr<TransparentType> pointedType) { this->pointedType = std::move(pointedType); }
+  TransparentTypeKind getKind() const override;
 
-  const TransparentType* getFullyUnwrappedType() const override {
-    return pointedType ? pointedType->getFullyUnwrappedType() : this;
-  }
-  TransparentType* getFullyUnwrappedType() override {
-    return pointedType ? pointedType->getFullyUnwrappedType() : this;
-  }
+  llvm::SmallPtrSet<const llvm::Type*, 8> getContainedLLVMTypes() const override;
+  bool isCompatibleLLVMType(const llvm::Type* llvmType) const override;
 
-  bool isOpaquePtr() const override { return !pointedType; }
-  bool containsOpaquePtr() const override { return !pointedType || pointedType->containsOpaquePtr(); }
+  const TransparentType* getFullyUnwrappedType() const override;
+  const TransparentType* getPointedType() const override;
+  const TransparentType* getFirstNonPtr() const override;
 
-  bool isPrimitiveTTOrPtrTo() const override { return pointedType && pointedType->isPrimitiveTT(); }
-  bool isArrayTTOrPtrTo() const override { return pointedType && pointedType->isArrayTT(); }
-  bool isStructTTOrPtrTo() const override { return pointedType && pointedType->isStructTT(); }
-
-  const TransparentType* getFirstNonPtr() const override { return pointedType ? pointedType.get() : nullptr; }
-  TransparentType* getFirstNonPtr() override { return pointedType ? pointedType.get() : nullptr; }
-
-  bool isByteTyOrPtrTo() const override { return pointedType && pointedType->isByteTyOrPtrTo(); }
-  bool isIntegerTyOrPtrTo() const override { return pointedType && pointedType->isIntegerTyOrPtrTo(); }
-  bool isFloatingPointTyOrPtrTo() const override { return pointedType && pointedType->isFloatingPointTyOrPtrTo(); }
-
-  llvm::SmallPtrSet<llvm::Type*, 4> getContainedLLVMTypes() const override;
+  bool isOpaquePtr() const override;
+  bool containsOpaquePtr() const override;
+  bool isPrimitiveTTOrPtrTo() const override;
+  bool isArrayTTOrPtrTo() const override;
+  bool isStructTTOrPtrTo() const override;
+  bool isByteTyOrPtrTo() const override;
+  bool isIntegerTyOrPtrTo() const override;
+  bool isFloatingPointTyOrPtrTo() const override;
   bool containsFloatingPointType() const override;
 
-  bool operator==(const TransparentType& other) const override;
+  bool isCompatibleWith(const TransparentType* otherType) const override;
 
-  bool isCompatibleWith(const TransparentType* other) const override;
-  std::unique_ptr<TransparentType> mergeWith(const TransparentType* other) const override;
+  const TransparentPointerType* setPointedType(const TransparentType* pointedType) const;
 
-  std::unique_ptr<TransparentType> clone() const override;
+  const TransparentType* mergeWith(const TransparentType* otherType) const override;
+
   std::string toString() const override;
 
 protected:
-  std::unique_ptr<TransparentType> pointedType;
+  const TransparentType* const pointedType;
 
-  TransparentPointerType(llvm::PointerType* llvmType, std::unique_ptr<TransparentType> pointedType = nullptr)
-  : TransparentType(llvmType), pointedType(std::move(pointedType)) {}
+  TransparentPointerType(llvm::LLVMContext* llvmContext,
+                         const llvm::PointerType* llvmType,
+                         const TransparentType* const pointedType = nullptr);
+  TransparentPointerType(const TransparentPointerType&);
+  TransparentPointerType(TransparentPointerType&&);
 };
 
-class TransparentArrayType : public TransparentType {
-  friend TransparentTypeFactory;
+class TransparentArrayType : public TransparentType,
+                             public llvm::FoldingSetNode {
+  friend TypeDispatcher;
 
 public:
-  static bool classof(const TransparentType* type) { return type->getKind() == K_Array; }
+  static const TransparentArrayType*
+  get(llvm::LLVMContext* llvmContext, const TransparentType* elementType, const llvm::Type* llvmType = nullptr);
 
-  TransparentTypeKind getKind() const override { return K_Array; }
-  bool isCompatibleLLVMType(llvm::Type* type) const override { return type->isArrayTy() || type->isVectorTy(); }
+  static bool classof(const TransparentType* type);
 
-  TransparentArrayType() = default;
+  static void Profile(llvm::FoldingSetNodeID& ID, const llvm::Type* llvmType, const TransparentType* elementType);
 
-  const TransparentType* getFullyUnwrappedType() const override { return getElementType()->getFullyUnwrappedType(); }
-  TransparentType* getFullyUnwrappedType() override { return getElementType()->getFullyUnwrappedType(); }
-  bool containsOpaquePtr() const override;
+  TransparentArrayType() = delete;
+  TransparentArrayType& operator=(const TransparentArrayType&) = delete;
+  TransparentArrayType& operator=(TransparentArrayType&&) = delete;
+  ~TransparentArrayType() override;
 
-  llvm::SmallPtrSet<llvm::Type*, 4> getContainedLLVMTypes() const override;
-  bool containsFloatingPointType() const override { return getElementType()->containsFloatingPointType(); }
+  bool operator==(const TransparentType& otherType) const override;
 
-  TransparentType* getElementType() const { return elementType.get(); }
-  void setElementType(std::unique_ptr<TransparentType> elementType) { this->elementType = std::move(elementType); }
+  TransparentTypeKind getKind() const override;
+
+  llvm::SmallPtrSet<const llvm::Type*, 8> getContainedLLVMTypes() const override;
+  bool isCompatibleLLVMType(const llvm::Type* llvmType) const override;
+
+  const TransparentType* getFullyUnwrappedType() const override;
+  const TransparentType* getElementType() const;
   unsigned getNumElements() const;
 
-  bool operator==(const TransparentType& other) const override;
-
-  bool isCompatibleWith(const TransparentType* other) const override;
-  std::unique_ptr<TransparentType> mergeWith(const TransparentType* other) const override;
-
-  std::unique_ptr<TransparentType> clone() const override;
-  std::string toString() const override;
-
-protected:
-  std::unique_ptr<TransparentType> elementType;
-
-  TransparentArrayType(const TransparentArrayType& other)
-  : TransparentType(other), elementType(other.elementType->clone()) {}
-
-  TransparentArrayType(llvm::ArrayType* arrayType)
-  : TransparentType(arrayType) {
-    elementType = TransparentTypeFactory::createFromType(arrayType->getElementType(), 0);
-  }
-
-  TransparentArrayType(llvm::VectorType* vecType)
-  : TransparentType(vecType) {
-    elementType = TransparentTypeFactory::createFromType(vecType->getElementType(), 0);
-  }
-};
-
-class TransparentStructType : public TransparentType {
-  friend TransparentTypeFactory;
-
-public:
-  static bool classof(const TransparentType* type) { return type->getKind() == K_Struct; }
-
-  TransparentTypeKind getKind() const override { return K_Struct; }
-  bool isCompatibleLLVMType(llvm::Type* type) const override { return type->isStructTy(); }
-
-  TransparentStructType() = default;
-
   bool containsOpaquePtr() const override;
-
-  llvm::SmallPtrSet<llvm::Type*, 4> getContainedLLVMTypes() const override;
   bool containsFloatingPointType() const override;
 
-  TransparentType* getFieldType(unsigned i) const { return fieldTypes[i].get(); }
-  void setFieldType(unsigned i, std::unique_ptr<TransparentType> fieldType) { fieldTypes[i] = std::move(fieldType); }
-  void addFieldType(std::unique_ptr<TransparentType> fieldType) { fieldTypes.push_back(std::move(fieldType)); }
-  unsigned getNumFieldTypes() const { return fieldTypes.size(); }
+  bool isCompatibleWith(const TransparentType* otherType) const override;
 
-  auto getFieldTypes() const {
-    return fieldTypes | std::views::transform([](auto& smart_ptr) { return smart_ptr.get(); });
-  }
+  const TransparentArrayType* setElementType(const TransparentType* elementType) const;
 
-  unsigned getFieldOffset(unsigned i) const { return fieldOffsets[i]; }
+  const TransparentType* mergeWith(const TransparentType* otherType) const override;
 
-  bool isFieldPadding(unsigned i) const { return llvm::is_contained(paddingFields, i); }
-  void addFieldPadding(unsigned i) { paddingFields.insert(i); }
-  unsigned getNumPaddingFields() const { return paddingFields.size(); }
+  void Profile(llvm::FoldingSetNodeID& ID) const;
 
-  std::set<unsigned> getPaddingFields() const { return paddingFields; }
-
-  bool operator==(const TransparentType& other) const override;
-
-  bool isCompatibleWith(const TransparentType* other) const override;
-  std::unique_ptr<TransparentType> mergeWith(const TransparentType* other) const override;
-
-  std::unique_ptr<TransparentType> clone() const override;
   std::string toString() const override;
 
 protected:
-  llvm::SmallVector<std::unique_ptr<TransparentType>, 8> fieldTypes;
-  llvm::SmallVector<unsigned> fieldOffsets;
-  std::set<unsigned> paddingFields; // TODO remove
+  const TransparentType* const elementType;
 
-  TransparentStructType(const TransparentStructType& other)
-  : TransparentType(other) {
-    for (const auto& field : other.fieldTypes)
-      fieldTypes.push_back(field->clone());
-    for (const auto& fieldOffset : other.fieldOffsets)
-      fieldOffsets.push_back(fieldOffset);
-    for (const auto& paddingFieldIdx : other.paddingFields)
-      paddingFields.insert(paddingFieldIdx);
-  }
+  TransparentArrayType(llvm::LLVMContext* llvmContext,
+                       const llvm::ArrayType* const llvmType,
+                       const TransparentType* const elementType = nullptr);
+  TransparentArrayType(llvm::LLVMContext* llvmContext,
+                       const llvm::VectorType* const llvmType,
+                       const TransparentType* const elementType = nullptr);
+  TransparentArrayType(llvm::LLVMContext* llvmContext, const TransparentType* const elementType = nullptr);
+  TransparentArrayType(const TransparentArrayType&);
+  TransparentArrayType(TransparentArrayType&&);
+};
 
-  TransparentStructType(llvm::StructType* unwrappedType);
+class TransparentStructType : public TransparentType,
+                              public llvm::FoldingSetNode {
+  friend TypeDispatcher;
 
-  TransparentStructType(llvm::SmallVector<std::unique_ptr<TransparentType>>& fieldTypes,
-                        const llvm::SmallVector<unsigned>& fieldOffsets,
-                        const llvm::SmallVector<unsigned>& fieldSizes);
+public:
+  static const TransparentStructType* get(llvm::LLVMContext* llvmContext,
+                                          const llvm::ArrayRef<const TransparentType*> fieldTypes,
+                                          const llvm::Type* llvmType = nullptr,
+                                          llvm::ArrayRef<unsigned> fieldOffsets = {},
+                                          llvm::ArrayRef<unsigned> fieldSizes = {},
+                                          llvm::SmallSet<unsigned, 8> paddingFields = {});
+
+  static bool classof(const TransparentType* type);
+
+  static void Profile(llvm::FoldingSetNodeID& ID,
+                      const llvm::Type* llvmType,
+                      const llvm::ArrayRef<const TransparentType*> fieldTypes);
+
+  TransparentStructType() = delete;
+  TransparentStructType& operator=(const TransparentStructType&) = delete;
+  TransparentStructType& operator=(TransparentStructType&&) = delete;
+  ~TransparentStructType() override;
+
+  bool operator==(const TransparentType& otherType) const override;
+
+  TransparentTypeKind getKind() const override;
+
+  llvm::SmallPtrSet<const llvm::Type*, 8> getContainedLLVMTypes() const override;
+  bool isCompatibleLLVMType(const llvm::Type* llvmType) const override;
+
+  unsigned getNumFieldTypes() const;
+  const llvm::ArrayRef<const TransparentType*> getFieldTypes() const;
+  const TransparentType* getFieldType(const unsigned i) const;
+  unsigned getFieldOffset(const unsigned i) const;
+  unsigned getFieldSize(const unsigned i) const;
+  unsigned getNumPaddingFields() const;
+  const llvm::SmallSet<unsigned, 8>& getPaddingFields() const;
+  bool isFieldPadding(const unsigned i) const;
+
+  bool containsOpaquePtr() const override;
+  bool containsFloatingPointType() const override;
+
+  bool isCompatibleWith(const TransparentType* otherType) const override;
+
+  const TransparentStructType* setFieldType(const unsigned i, const TransparentType* fieldType) const;
+
+  const TransparentType* mergeWith(const TransparentType* otherType) const override;
+
+  void Profile(llvm::FoldingSetNodeID& ID) const;
+
+  std::string toString() const override;
+
+protected:
+  const llvm::SmallVector<const TransparentType*, 8> fieldTypes;
+  const llvm::SmallVector<unsigned> fieldOffsets;
+  const llvm::SmallVector<unsigned> fieldSizes;
+  const llvm::SmallSet<unsigned, 8> paddingFields;
+
+  TransparentStructType(llvm::LLVMContext* llvmContext,
+                        const llvm::StructType* const llvmType,
+                        const llvm::ArrayRef<const TransparentType*> fieldTypes = {},
+                        const llvm::ArrayRef<unsigned> fieldOffsets = {},
+                        const llvm::ArrayRef<unsigned> fieldSizes = {},
+                        const llvm::SmallSet<unsigned, 8> paddingFields = {});
+  TransparentStructType(const TransparentStructType&);
+  TransparentStructType(TransparentStructType&&);
 };
 
 } // namespace tda
